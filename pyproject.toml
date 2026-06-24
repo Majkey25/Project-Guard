@@ -1,0 +1,45 @@
+[project]
+name = "github-audit"
+version = "0.1.0"
+description = "Audit GitHub issues and pull requests for required workflow metadata."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "httpx",
+    "playwright>=1.60.0",
+    "pydantic",
+    "pydantic-ai",
+    "pydantic-settings",
+]
+
+[project.scripts]
+github-audit = "github_audit.cli:main"
+
+[dependency-groups]
+dev = [
+    "coverage>=7.14.3",
+    "pyright",
+    "pytest",
+    "ruff",
+]
+
+[build-system]
+requires = ["uv_build>=0.8.0,<0.10.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.pyright]
+include = ["src", "tests"]
+pythonVersion = "3.12"
+typeCheckingMode = "strict"
