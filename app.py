@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -7,8 +8,8 @@ import streamlit as st
 from pydantic import ValidationError
 
 from github_audit.config import Settings
-from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.discovery import discover_all
+from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.scanner import scan_all
 
 st.set_page_config(page_title="GitHub Audit", page_icon="🔍", layout="wide")
@@ -32,7 +33,10 @@ def _bool(key: str, fallback: str = "false") -> bool:
     return E.get(key, fallback).lower() == "true"
 
 # ── session state bootstrap ───────────────────────────────────────────────────
-for _k, _v in [("rows", None), ("error", None), ("stats", None), ("limitations", [])]:
+for _k, _v in [
+    ("rows", None), ("error", None), ("stats", None),
+    ("limitations", []), ("scan_time", None),
+]:
     if _k not in st.session_state:
         st.session_state[_k] = _v
 
@@ -51,7 +55,7 @@ with st.sidebar:
         project_numbers = st.text_input(
             "Project numbers",
             value=E.get("GITHUB_PROJECT_NUMBERS", E.get("GITHUB_PROJECT_NUMBER", "")),
-            help="Comma-separated, e.g. 48,32,55",
+            help="Comma-separated, e.g. 48,32,55. Remove numbers to narrow the scan.",
         )
 
     with st.expander("👥 Assignees", expanded=True):
@@ -76,7 +80,7 @@ with st.sidebar:
                 "REQUIRED_PROJECT_FIELDS",
                 "Estimate,Iteration (sprint),Priority,Difficulty,Status",
             ),
-            help="Comma-separated. Findings appear for each missing field.",
+            help="Comma-separated. One finding per missing field per item.",
         )
 
     with st.expander("🔗 Development Links", expanded=False):
@@ -110,17 +114,18 @@ with st.sidebar:
             "Repository allowlist",
             value=E.get("GITHUB_REPOSITORY_ALLOWLIST", ""),
             disabled=inc_all_repos,
-            help="Comma-separated repo names without org prefix. Ignored when 'All org repositories' is on.",
+            help="Comma-separated repo names without org prefix.",
         )
 
     st.divider()
     scan_btn = st.button("▶ Run Scan", type="primary", use_container_width=True)
-    if st.session_state.rows is not None:
-        if st.button("✕ Clear Results", use_container_width=True):
-            for k in ("rows", "error", "stats"):
-                st.session_state[k] = None
-            st.session_state.limitations = []
-            st.rerun()
+    if st.session_state.scan_time:
+        st.caption(f"Last scan: {st.session_state.scan_time}")
+    if st.session_state.rows is not None and st.button("✕ Clear Results", use_container_width=True):
+        for k in ("rows", "error", "stats", "scan_time"):
+            st.session_state[k] = None
+        st.session_state.limitations = []
+        st.rerun()
 
 
 # ── scan logic ────────────────────────────────────────────────────────────────
@@ -177,6 +182,7 @@ def _run_scan() -> None:
 
     limitations = list({lim for r in results for lim in r.limitations})
 
+    st.session_state.scan_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     st.session_state.rows = rows
     st.session_state.error = None
     st.session_state.stats = {"issues": issues, "prs": prs, "findings": len(rows)}
@@ -229,7 +235,7 @@ stats = st.session_state.stats
 c1, c2, c3 = st.columns(3)
 c1.metric("Issues scanned", stats["issues"])
 c2.metric("PRs scanned", stats["prs"])
-c3.metric("Findings", stats["findings"], delta=None)
+c3.metric("Findings", stats["findings"])
 
 if not rows:
     st.success("✅ No findings — everything looks good!")
@@ -237,8 +243,13 @@ if not rows:
 
 df = pd.DataFrame(rows)
 
-# ── filter controls ───────────────────────────────────────────────────────────
+# ── filters ───────────────────────────────────────────────────────────────────
 st.subheader("Filters")
+
+title_search = st.text_input(
+    "title_search", placeholder="🔍 Search by title keyword…", label_visibility="collapsed"
+)
+
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
 
 all_repos = sorted(df["Repository"].unique().tolist())
@@ -255,7 +266,15 @@ all_assignees = sorted({
     if a.strip() and a.strip() != "(none)"
 })
 all_types = sorted(df["Type"].unique().tolist())
-all_projects = sorted(df["Project"].unique().tolist())
+
+# Project filter: "48 - Sprint Board" labels built from already-fetched data
+proj_labels: dict[object, str] = {}
+for r in rows:
+    p = r["Project"]
+    if p and p not in proj_labels:
+        title = str(r["Project Title"])
+        proj_labels[p] = f"{p} - {title}" if title else str(p)
+all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
 
 with fc1:
     sel_repos = st.multiselect("Repository", all_repos)
@@ -266,10 +285,14 @@ with fc3:
 with fc4:
     sel_types = st.multiselect("Type", all_types)
 with fc5:
-    sel_projects = st.multiselect("Project #", all_projects)
+    sel_proj_labels = st.multiselect("Project", all_proj_options)
 
-# apply filters
+sel_proj_nums = {p for p, label in proj_labels.items() if label in sel_proj_labels}
+
+# apply all filters
 mask = pd.Series([True] * len(df), dtype=bool)
+if title_search:
+    mask &= df["Title"].str.contains(title_search, case=False, na=False)
 if sel_repos:
     mask &= df["Repository"].isin(sel_repos)
 if sel_missing:
@@ -278,8 +301,8 @@ if sel_assignees:
     mask &= df["Assignees"].apply(lambda a: any(x in a for x in sel_assignees))
 if sel_types:
     mask &= df["Type"].isin(sel_types)
-if sel_projects:
-    mask &= df["Project"].isin(sel_projects)
+if sel_proj_nums:
+    mask &= df["Project"].isin(sel_proj_nums)
 
 filtered = df[mask].reset_index(drop=True)
 st.caption(f"Showing **{len(filtered)}** of {len(df)} findings")
@@ -290,7 +313,7 @@ st.dataframe(
     filtered[display_cols],
     use_container_width=True,
     hide_index=True,
-    height=min(600, 50 + len(filtered) * 35),
+    height=min(600, 100 + len(filtered) * 35),
     column_config={
         "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
         "#": st.column_config.NumberColumn("#", format="%d", width="small"),
@@ -306,6 +329,20 @@ st.download_button(
     "findings.csv",
     "text/csv",
 )
+
+# ── missing field breakdown ───────────────────────────────────────────────────
+with st.expander("📊 Missing field breakdown (all findings)"):
+    field_counts = (
+        pd.Series([
+            f.strip()
+            for cell in df["Missing Fields"]
+            for f in cell.split(",")
+            if f.strip()
+        ])
+        .value_counts()
+        .sort_values()
+    )
+    st.bar_chart(field_counts, horizontal=True)
 
 # ── limitations ───────────────────────────────────────────────────────────────
 if st.session_state.limitations:
