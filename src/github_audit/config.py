@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import date
 from typing import Literal
 
 from pydantic import (
@@ -45,6 +46,12 @@ class Settings(BaseSettings):
     github_org: str = Field(default="OKsystem", validation_alias="GITHUB_ORG")
     github_project_number: int = Field(default=0, validation_alias="GITHUB_PROJECT_NUMBER")
     github_project_numbers_raw: str = Field(default="", validation_alias="GITHUB_PROJECT_NUMBERS")
+    github_include_all_projects: bool = Field(
+        default=False, validation_alias="GITHUB_INCLUDE_ALL_PROJECTS"
+    )
+    github_include_closed_projects: bool = Field(
+        default=False, validation_alias="GITHUB_INCLUDE_CLOSED_PROJECTS"
+    )
     github_project_owner_type: Literal["org"] = Field(
         default="org", validation_alias="GITHUB_PROJECT_OWNER_TYPE"
     )
@@ -80,6 +87,8 @@ class Settings(BaseSettings):
     include_closed_issues: bool = Field(default=False, validation_alias="INCLUDE_CLOSED_ISSUES")
     include_pull_requests: bool = Field(default=True, validation_alias="INCLUDE_PULL_REQUESTS")
     include_issues: bool = Field(default=True, validation_alias="INCLUDE_ISSUES")
+    github_updated_from: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_FROM")
+    github_updated_to: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_TO")
 
     auto_apply: bool = Field(default=False, validation_alias="AUTO_APPLY")
     auto_apply_min_confidence: float = Field(
@@ -140,7 +149,7 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_repository_scope(self) -> Settings:
-        if not self.github_project_numbers:
+        if not self.github_include_all_projects and not self.github_project_numbers:
             msg = "GITHUB_PROJECT_NUMBER or GITHUB_PROJECT_NUMBERS is required"
             raise ValueError(msg)
         if not self.github_include_all_repositories and not self.repository_allowlist:
@@ -151,6 +160,13 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         if not self.include_issues and not self.include_pull_requests:
             msg = "at least one of INCLUDE_ISSUES or INCLUDE_PULL_REQUESTS must be true"
+            raise ValueError(msg)
+        if (
+            self.github_updated_from is not None
+            and self.github_updated_to is not None
+            and self.github_updated_from > self.github_updated_to
+        ):
+            msg = "GITHUB_UPDATED_FROM must be before or equal to GITHUB_UPDATED_TO"
             raise ValueError(msg)
         return self
 

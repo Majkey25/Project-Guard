@@ -95,6 +95,7 @@ fragment ContentParts on ProjectV2ItemContent {
     title
     url
     state
+    updatedAt
     body
     repository { nameWithOwner }
     assignees(first: 20) { nodes { login } }
@@ -110,6 +111,7 @@ fragment ContentParts on ProjectV2ItemContent {
     title
     url
     state
+    updatedAt
     body
     repository { nameWithOwner }
     assignees(first: 20) { nodes { login } }
@@ -216,6 +218,20 @@ query Repositories($org: String!, $after: String) {
 }
 """
 
+PROJECT_NUMBERS_QUERY = """
+query ProjectNumbers($org: String!, $after: String) {
+  organization(login: $org) {
+    projectsV2(first: 100, after: $after, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      nodes {
+        number
+        closed
+      }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
 SEARCH_QUERY = """
 query SearchItems($query: String!, $after: String) {
   search(query: $query, type: ISSUE, first: 100, after: $after) {
@@ -227,6 +243,7 @@ query SearchItems($query: String!, $after: String) {
         title
         url
         state
+        updatedAt
         body
         repository { nameWithOwner }
         assignees(first: 20) { nodes { login } }
@@ -242,6 +259,7 @@ query SearchItems($query: String!, $after: String) {
         title
         url
         state
+        updatedAt
         body
         repository { nameWithOwner }
         assignees(first: 20) { nodes { login } }
@@ -328,6 +346,24 @@ def fetch_all_repositories(client: GitHubClient, org: str) -> list[str]:
             break
         after = optional_str(page_info.get("endCursor"))
     return repositories
+
+
+def fetch_project_numbers(client: GitHubClient, org: str, *, include_closed: bool) -> list[int]:
+    project_numbers: list[int] = []
+    after: str | None = None
+    while True:
+        data = client.graphql(PROJECT_NUMBERS_QUERY, {"org": org, "after": after})
+        organization = as_object(data.get("organization"), "organization")
+        connection = as_object(organization.get("projectsV2"), "organization.projectsV2")
+        for node in as_list(connection.get("nodes"), "organization.projectsV2.nodes"):
+            project = as_object(node, "project")
+            if include_closed or project.get("closed") is not True:
+                project_numbers.append(required_int(project.get("number"), "project.number"))
+        page_info = as_object(connection.get("pageInfo"), "organization.projectsV2.pageInfo")
+        if page_info.get("hasNextPage") is not True:
+            break
+        after = optional_str(page_info.get("endCursor"))
+    return project_numbers
 
 
 def fetch_project_items(client: GitHubClient, org: str, project_number: int) -> list[ProjectItem]:
@@ -512,6 +548,7 @@ def parse_project_item(raw: JsonObject) -> ProjectItem:
         assignees=parsed_content.assignees,
         labels=parsed_content.labels,
         milestone=parsed_content.milestone,
+        updated_at=parsed_content.updated_at,
         field_values=field_values,
         linked_pull_requests_count=(
             parsed_content.linked_pull_requests_count
@@ -536,6 +573,7 @@ def parse_content(raw: JsonObject) -> GitHubContent | None:
             title=required_str(raw.get("title"), "issue title"),
             url=required_str(raw.get("url"), "issue url"),
             state=required_str(raw.get("state"), "issue state"),
+            updated_at=optional_str(raw.get("updatedAt")),
             body=optional_str(raw.get("body")) or "",
             assignees=parse_named_nodes(raw, "assignees", "login"),
             labels=parse_named_nodes(raw, "labels", "name"),
@@ -550,6 +588,7 @@ def parse_content(raw: JsonObject) -> GitHubContent | None:
             title=required_str(raw.get("title"), "pull request title"),
             url=required_str(raw.get("url"), "pull request url"),
             state=required_str(raw.get("state"), "pull request state"),
+            updated_at=optional_str(raw.get("updatedAt")),
             body=optional_str(raw.get("body")) or "",
             assignees=parse_named_nodes(raw, "assignees", "login"),
             labels=parse_named_nodes(raw, "labels", "name"),

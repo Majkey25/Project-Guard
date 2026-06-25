@@ -12,7 +12,7 @@ from github_audit.models import (
     ProjectFieldValue,
     ProjectItem,
 )
-from github_audit.scanner import scan, scan_all
+from github_audit.scanner import content_from_project_item, scan, scan_all
 
 
 def _settings(**overrides: object) -> Settings:
@@ -41,7 +41,9 @@ def _discovery(repos: list[str] | None = None) -> DiscoveryResult:
         project_title="Project",
         project_url="https://github.com/orgs/OKsystem/projects/1",
         repositories=repos or ["OKsystem/repo"],
-        fields=[ProjectFieldDefinition(id="f-est", name="Estimate", data_type="NUMBER", kind="field")],
+        fields=[
+            ProjectFieldDefinition(id="f-est", name="Estimate", data_type="NUMBER", kind="field")
+        ],
         required_fields_missing=[],
         issue_sample_count=0,
         pull_request_sample_count=0,
@@ -56,6 +58,7 @@ def _issue(
     number: int = 1,
     assignees: list[str] | None = None,
     linked_prs: int = 0,
+    updated_at: str | None = None,
 ) -> GitHubIssue:
     return GitHubIssue(
         id=f"I_{number}",
@@ -66,6 +69,7 @@ def _issue(
         state="OPEN",
         body="",
         assignees=assignees or ["alice"],
+        updated_at=updated_at,
         linked_pull_requests_count=linked_prs,
     )
 
@@ -74,6 +78,7 @@ def _project_item(
     content_id: str = "I_1",
     *,
     has_estimate: bool = True,
+    updated_at: str | None = None,
 ) -> ProjectItem:
     field_values: dict[str, ProjectFieldValue] = {}
     if has_estimate:
@@ -88,6 +93,7 @@ def _project_item(
         number=1,
         title="Issue 1",
         url="https://github.com/OKsystem/repo/issues/1",
+        updated_at=updated_at,
         field_values=field_values,
     )
 
@@ -106,6 +112,28 @@ def test_scan_compliant_issue_produces_no_finding() -> None:
         result = scan(client, _settings(), _discovery(), searched_items=None)
 
     assert result.findings == []
+    assert result.scanned_issue_count == 1
+
+
+def test_scan_filters_by_updated_range() -> None:
+    old_issue = _issue(1, updated_at="2026-05-01T00:00:00Z")
+    new_issue = _issue(2, updated_at="2026-06-15T00:00:00Z")
+    client = MagicMock()
+    with patch("github_audit.scanner.fetch_project_items", return_value=[]):
+        result = scan(
+            client,
+            _settings(
+                github_updated_from="2026-06-01",
+                github_updated_to="2026-06-30",
+                required_project_fields_raw="",
+                require_assignee=False,
+                require_target_assignee=False,
+                require_project_item=False,
+            ),
+            _discovery(),
+            searched_items=[old_issue, new_issue],
+        )
+
     assert result.scanned_issue_count == 1
 
 
@@ -163,6 +191,16 @@ def test_scan_out_of_repo_item_has_no_project_item_context() -> None:
         )
 
     assert result.findings == []
+
+
+def test_content_from_project_item_preserves_updated_at() -> None:
+    content = content_from_project_item(
+        _project_item(updated_at="2026-06-15T00:00:00Z"),
+        {"OKsystem/repo"},
+    )
+
+    assert content is not None
+    assert content.updated_at == "2026-06-15T00:00:00Z"
 
 
 def test_scan_counts_prs_separately() -> None:

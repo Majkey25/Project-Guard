@@ -112,7 +112,9 @@ def test_development_status_pr_count() -> None:
 
 
 def test_development_status_pr_prefers_max() -> None:
-    status = development_status(_pr(closing_issues=0), _item(closing_issues=2, content_type="pull_request"))
+    status = development_status(
+        _pr(closing_issues=0), _item(closing_issues=2, content_type="pull_request")
+    )
     assert status == "closing_issues=2"
 
 

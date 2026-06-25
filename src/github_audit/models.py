@@ -43,6 +43,7 @@ class ProjectItem(BaseModel):
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
     milestone: str | None = None
+    updated_at: str | None = None
     field_values: dict[str, ProjectFieldValue] = Field(default_factory=dict)
     linked_pull_requests_count: int = 0
     closing_issues_count: int = 0
@@ -61,6 +62,7 @@ class GitHubIssue(BaseModel):
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
     milestone: str | None = None
+    updated_at: str | None = None
     linked_pull_requests_count: int = 0
 
 
@@ -77,6 +79,7 @@ class GitHubPullRequest(BaseModel):
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
     milestone: str | None = None
+    updated_at: str | None = None
     closing_issues_count: int = 0
 
 
@@ -126,6 +129,7 @@ class AuditFinding(BaseModel):
     title: str
     url: str
     assignees: list[str]
+    updated_at: str | None = None
     missing_fields: list[str]
     current_project_fields: dict[str, str] = Field(default_factory=dict)
     development_status: str

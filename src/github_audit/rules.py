@@ -45,6 +45,7 @@ def evaluate_item(
         title=content.title,
         url=content.url,
         assignees=content.assignees,
+        updated_at=content.updated_at,
         missing_fields=missing,
         current_project_fields=current_values,
         development_status=development_status(content, project_item),

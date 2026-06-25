@@ -6,6 +6,7 @@ from github_audit.models import DiscoveryResult, GitHubIssue, GitHubPullRequest
 from github_audit.project_fields import (
     fetch_project_fields,
     fetch_project_items,
+    fetch_project_numbers,
     fetch_repositories,
     probe_branch_links,
     search_items,
@@ -29,6 +30,15 @@ def discover_all(client: GitHubClient, settings: Settings) -> list[DiscoveryResu
     issue_sample_count = sum(isinstance(item, GitHubIssue) for item in samples)
     pull_request_sample_count = sum(isinstance(item, GitHubPullRequest) for item in samples)
     branch_available, branch_detail = probe_branch_links(client, repositories)
+    project_numbers = (
+        fetch_project_numbers(
+            client,
+            settings.github_org,
+            include_closed=settings.github_include_closed_projects,
+        )
+        if settings.github_include_all_projects
+        else settings.github_project_numbers
+    )
     return [
         discover_project(
             client,
@@ -40,7 +50,7 @@ def discover_all(client: GitHubClient, settings: Settings) -> list[DiscoveryResu
             branch_available,
             branch_detail,
         )
-        for project_number in settings.github_project_numbers
+        for project_number in project_numbers
     ]
 
 

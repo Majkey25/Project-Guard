@@ -52,6 +52,7 @@ def _finding(number: int = 1, item_type: str = "issue") -> AuditFinding:
         title=f"Issue {number}",
         url=f"https://github.com/OKsystem/repo/issues/{number}",
         assignees=["alice"],
+        updated_at="2026-06-15T00:00:00Z",
         missing_fields=["Estimate"],
         development_status="linked_pull_requests=0",
         project_number=42,
@@ -251,6 +252,7 @@ def test_write_csv_creates_valid_csv(tmp_path: Path) -> None:
     assert rows[0]["repository"] == "OKsystem/repo"
     assert rows[0]["item_type"] == "issue"
     assert rows[0]["number"] == "1"
+    assert rows[0]["updated_at"] == "2026-06-15T00:00:00Z"
     assert "Estimate" in rows[0]["missing_fields"]
 
 

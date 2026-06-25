@@ -1,6 +1,5 @@
 {
-    "include": ["src", "tests"],
-    "ignore": ["app.py"],
+    "include": ["src", "tests", "app.py"],
     "venvPath": ".",
     "venv": ".venv",
     "pythonVersion": "3.12",

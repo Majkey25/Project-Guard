@@ -80,9 +80,7 @@ def test_graphql_raises_on_500(http: MagicMock) -> None:
 
 
 def test_graphql_raises_on_errors_field(http: MagicMock) -> None:
-    http.post.return_value = _resp(
-        body={"data": {}, "errors": [{"message": "Field not found"}]}
-    )
+    http.post.return_value = _resp(body={"data": {}, "errors": [{"message": "Field not found"}]})
     with pytest.raises(GitHubError, match="Field not found"):
         GitHubClient("tok").graphql("query {}")
 
@@ -139,9 +137,8 @@ def test_graphql_retries_502(http: MagicMock) -> None:
 
 def test_graphql_503_exhausts_retries_and_raises(http: MagicMock) -> None:
     http.post.return_value = _resp(status=503, text="unavailable")
-    with patch("time.sleep"):
-        with pytest.raises(GitHubError, match="503"):
-            GitHubClient("tok").graphql("query {}")
+    with patch("time.sleep"), pytest.raises(GitHubError, match="503"):
+        GitHubClient("tok").graphql("query {}")
 
 
 # ── context manager ───────────────────────────────────────────────────────────

@@ -2,24 +2,26 @@ from __future__ import annotations
 
 from typing import Any
 
-from github_audit.github_client import GitHubError
+from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.project_fields import (
     fetch_all_repositories,
     fetch_project_fields,
     fetch_project_items,
+    fetch_project_numbers,
     fetch_repositories,
     probe_branch_links,
     search_items,
 )
 
 
-class FakeClient:
+class FakeClient(GitHubClient):
     """Stub that replays queued graphql() return values."""
 
     def __init__(self, *responses: Any) -> None:
         self._queue: list[Any] = list(responses)
 
-    def graphql(self, _query: str, _variables: Any = None) -> Any:
+    def graphql(self, query: str, variables: Any = None) -> Any:
+        _ = query, variables
         item = self._queue.pop(0)
         if isinstance(item, BaseException):
             raise item
@@ -38,6 +40,7 @@ def _issue_content(number: int = 1) -> dict[str, Any]:
         "title": f"Issue {number}",
         "url": f"https://github.com/org/repo/issues/{number}",
         "state": "OPEN",
+        "updatedAt": "2026-06-10T12:00:00Z",
         "body": "",
         "repository": {"nameWithOwner": "org/repo"},
         "assignees": {"nodes": [{"login": "alice"}]},
@@ -55,6 +58,7 @@ def _pr_content(number: int = 2) -> dict[str, Any]:
         "title": f"PR {number}",
         "url": f"https://github.com/org/repo/pull/{number}",
         "state": "OPEN",
+        "updatedAt": "2026-06-11T12:00:00Z",
         "body": "",
         "repository": {"nameWithOwner": "org/repo"},
         "assignees": {"nodes": []},
@@ -133,7 +137,10 @@ def test_fetch_project_fields_pagination() -> None:
     page1 = {
         "organization": {
             "projectV2": {
-                "id": "PVT_1", "number": 1, "title": "P", "url": "u",
+                "id": "PVT_1",
+                "number": 1,
+                "title": "P",
+                "url": "u",
                 "fields": _page([_single_select_field_def()], has_next=True, cursor="c1"),
             }
         }
@@ -141,7 +148,10 @@ def test_fetch_project_fields_pagination() -> None:
     page2 = {
         "organization": {
             "projectV2": {
-                "id": "PVT_1", "number": 1, "title": "P", "url": "u",
+                "id": "PVT_1",
+                "number": 1,
+                "title": "P",
+                "url": "u",
                 "fields": _page([_iteration_field_def()]),
             }
         }
@@ -156,7 +166,10 @@ def test_fetch_project_fields_skips_unknown_type() -> None:
     response = {
         "organization": {
             "projectV2": {
-                "id": "PVT_1", "number": 1, "title": "P", "url": "u",
+                "id": "PVT_1",
+                "number": 1,
+                "title": "P",
+                "url": "u",
                 "fields": _page([unknown]),
             }
         }
@@ -170,13 +183,7 @@ def test_fetch_project_fields_skips_unknown_type() -> None:
 
 
 def _items_response(items: list[dict[str, Any]]) -> dict[str, Any]:
-    return {
-        "organization": {
-            "projectV2": {
-                "items": _page(items)
-            }
-        }
-    }
+    return {"organization": {"projectV2": {"items": _page(items)}}}
 
 
 def _project_item_node(
@@ -192,15 +199,16 @@ def _project_item_node(
 
 
 def test_fetch_project_items_issue_with_field_value() -> None:
-    response = _items_response([
-        _project_item_node(_issue_content(), [_number_field_value("Estimate", 5)])
-    ])
+    response = _items_response(
+        [_project_item_node(_issue_content(), [_number_field_value("Estimate", 5)])]
+    )
     client = FakeClient(response)
     items = fetch_project_items(client, "org", 1)  # type: ignore[arg-type]
     assert len(items) == 1
     assert items[0].repository == "org/repo"
     assert items[0].content_type == "issue"
     assert items[0].number == 1
+    assert items[0].updated_at == "2026-06-10T12:00:00Z"
     assert "Estimate" in items[0].field_values
     assert items[0].field_values["Estimate"].value == 5
 
@@ -241,11 +249,7 @@ def test_fetch_project_items_pagination() -> None:
         }
     }
     page2: dict[str, Any] = {
-        "organization": {
-            "projectV2": {
-                "items": _page([_project_item_node(_issue_content(2))])
-            }
-        }
+        "organization": {"projectV2": {"items": _page([_project_item_node(_issue_content(2))])}}
     }
     client = FakeClient(page1, page2)
     items = fetch_project_items(client, "org", 1)  # type: ignore[arg-type]
@@ -299,10 +303,12 @@ def test_fetch_repositories_skips_archived() -> None:
 def test_fetch_all_repositories() -> None:
     response: dict[str, Any] = {
         "organization": {
-            "repositories": _page([
-                {"nameWithOwner": "org/repo-a", "isArchived": False},
-                {"nameWithOwner": "org/repo-b", "isArchived": True},
-            ])
+            "repositories": _page(
+                [
+                    {"nameWithOwner": "org/repo-a", "isArchived": False},
+                    {"nameWithOwner": "org/repo-b", "isArchived": True},
+                ]
+            )
         }
     }
     client = FakeClient(response)
@@ -320,13 +326,46 @@ def test_fetch_all_repositories_pagination() -> None:
         }
     }
     page2: dict[str, Any] = {
-        "organization": {
-            "repositories": _page([{"nameWithOwner": "org/b", "isArchived": False}])
-        }
+        "organization": {"repositories": _page([{"nameWithOwner": "org/b", "isArchived": False}])}
     }
     client = FakeClient(page1, page2)
     repos = fetch_all_repositories(client, "org")  # type: ignore[arg-type]
     assert repos == ["org/a", "org/b"]
+
+
+# ── fetch_project_numbers ────────────────────────────────────────────────────
+
+
+def test_fetch_project_numbers_skips_closed_by_default() -> None:
+    response: dict[str, Any] = {
+        "organization": {
+            "projectsV2": _page(
+                [
+                    {"number": 1, "closed": False},
+                    {"number": 2, "closed": True},
+                ]
+            )
+        }
+    }
+    client = FakeClient(response)
+    numbers = fetch_project_numbers(client, "org", include_closed=False)  # type: ignore[arg-type]
+    assert numbers == [1]
+
+
+def test_fetch_project_numbers_can_include_closed() -> None:
+    response: dict[str, Any] = {
+        "organization": {
+            "projectsV2": _page(
+                [
+                    {"number": 1, "closed": False},
+                    {"number": 2, "closed": True},
+                ]
+            )
+        }
+    }
+    client = FakeClient(response)
+    numbers = fetch_project_numbers(client, "org", include_closed=True)  # type: ignore[arg-type]
+    assert numbers == [1, 2]
 
 
 # ── search_items ──────────────────────────────────────────────────────────────
@@ -338,34 +377,55 @@ def _search_response(nodes: list[dict[str, Any]]) -> dict[str, Any]:
 
 def test_search_items_returns_issues_and_prs() -> None:
     fc = FakeClient(_search_response([_issue_content(1)]), _search_response([_pr_content(2)]))
-    results = search_items(fc, ["org/repo"], ["alice"],  # type: ignore[arg-type]
-                           include_issues=True, include_pull_requests=True,
-                           include_closed_issues=False)
+    results = search_items(
+        fc,
+        ["org/repo"],
+        ["alice"],  # type: ignore[arg-type]
+        include_issues=True,
+        include_pull_requests=True,
+        include_closed_issues=False,
+    )
     assert len(results) == 2
+    assert results[0].updated_at == "2026-06-10T12:00:00Z"
 
 
 def test_search_items_deduplicates_by_id() -> None:
     issue = _issue_content(1)
     fc = FakeClient(_search_response([issue]), _search_response([issue]))
-    results = search_items(fc, ["org/repo"], ["alice"],  # type: ignore[arg-type]
-                           include_issues=True, include_pull_requests=True,
-                           include_closed_issues=False)
+    results = search_items(
+        fc,
+        ["org/repo"],
+        ["alice"],  # type: ignore[arg-type]
+        include_issues=True,
+        include_pull_requests=True,
+        include_closed_issues=False,
+    )
     assert len(results) == 1
 
 
 def test_search_items_skips_issues_when_disabled() -> None:
     fc = FakeClient(_search_response([_pr_content(2)]))
-    results = search_items(fc, ["org/repo"], ["alice"],  # type: ignore[arg-type]
-                           include_issues=False, include_pull_requests=True,
-                           include_closed_issues=False)
+    results = search_items(
+        fc,
+        ["org/repo"],
+        ["alice"],  # type: ignore[arg-type]
+        include_issues=False,
+        include_pull_requests=True,
+        include_closed_issues=False,
+    )
     assert len(results) == 1
 
 
 def test_search_items_skips_prs_when_disabled() -> None:
     fc = FakeClient(_search_response([_issue_content(1)]))
-    results = search_items(fc, ["org/repo"], ["alice"],  # type: ignore[arg-type]
-                           include_issues=True, include_pull_requests=False,
-                           include_closed_issues=False)
+    results = search_items(
+        fc,
+        ["org/repo"],
+        ["alice"],  # type: ignore[arg-type]
+        include_issues=True,
+        include_pull_requests=False,
+        include_closed_issues=False,
+    )
     assert len(results) == 1
 
 

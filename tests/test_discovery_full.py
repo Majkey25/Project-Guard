@@ -53,7 +53,10 @@ def test_discover_repositories_applies_denylist() -> None:
             "llm_api_version": "",
         }
     )
-    with patch("github_audit.discovery.fetch_repositories", return_value=["org/repo-a", "org/repo-b"]):
+    with patch(
+        "github_audit.discovery.fetch_repositories",
+        return_value=["org/repo-a", "org/repo-b"],
+    ):
         client = MagicMock()
         repos = discover_repositories(client, settings)
     assert repos == ["org/repo-a"]
@@ -88,7 +91,10 @@ def test_discover_all_returns_one_result_per_project() -> None:
         patch("github_audit.discovery.fetch_repositories", return_value=["org/repo-a"]),
         patch("github_audit.discovery.search_items", return_value=[]),
         patch("github_audit.discovery.probe_branch_links", return_value=(False, "no probe")),
-        patch("github_audit.discovery.fetch_project_fields", return_value=(_mock_project(), fields)),
+        patch(
+            "github_audit.discovery.fetch_project_fields",
+            return_value=(_mock_project(), fields),
+        ),
         patch("github_audit.discovery.fetch_project_items", return_value=[]),
     ):
         client = MagicMock()
@@ -121,7 +127,10 @@ def test_discover_all_reports_missing_required_fields() -> None:
         patch("github_audit.discovery.fetch_repositories", return_value=["org/repo"]),
         patch("github_audit.discovery.search_items", return_value=[]),
         patch("github_audit.discovery.probe_branch_links", return_value=(False, "no probe")),
-        patch("github_audit.discovery.fetch_project_fields", return_value=(_mock_project(), fields)),
+        patch(
+            "github_audit.discovery.fetch_project_fields",
+            return_value=(_mock_project(), fields),
+        ),
         patch("github_audit.discovery.fetch_project_items", return_value=[]),
     ):
         results = discover_all(MagicMock(), settings)
@@ -161,11 +170,45 @@ def test_discover_all_multiple_projects() -> None:
     assert results[1].project_number == 20
 
 
+def test_discover_all_can_fetch_all_project_numbers() -> None:
+    settings = Settings.model_validate(
+        {
+            "github_token": "token",
+            "github_include_all_projects": True,
+            "github_repository_allowlist_raw": "repo",
+            "target_assignees_raw": "alice",
+            "llm_provider": "",
+            "llm_base_url": "",
+            "llm_api_version": "",
+        }
+    )
+    with (
+        patch("github_audit.discovery.fetch_repositories", return_value=["org/repo"]),
+        patch("github_audit.discovery.search_items", return_value=[]),
+        patch("github_audit.discovery.probe_branch_links", return_value=(True, "ok")),
+        patch("github_audit.discovery.fetch_project_numbers", return_value=[10, 20]),
+        patch(
+            "github_audit.discovery.fetch_project_fields",
+            side_effect=[
+                (_mock_project(10), []),
+                (_mock_project(20), []),
+            ],
+        ),
+        patch("github_audit.discovery.fetch_project_items", return_value=[]),
+    ):
+        results = discover_all(MagicMock(), settings)
+
+    assert [result.project_number for result in results] == [10, 20]
+
+
 def test_discover_all_branch_link_limitation_included() -> None:
     with (
         patch("github_audit.discovery.fetch_repositories", return_value=["org/repo"]),
         patch("github_audit.discovery.search_items", return_value=[]),
-        patch("github_audit.discovery.probe_branch_links", return_value=(False, "probe failed: 403")),
+        patch(
+            "github_audit.discovery.probe_branch_links",
+            return_value=(False, "probe failed: 403"),
+        ),
         patch("github_audit.discovery.fetch_project_fields", return_value=(_mock_project(), [])),
         patch("github_audit.discovery.fetch_project_items", return_value=[]),
     ):
@@ -179,12 +222,23 @@ def test_discover_all_counts_sample_issues_and_prs() -> None:
     from github_audit.models import GitHubIssue, GitHubPullRequest
 
     issue = GitHubIssue(
-        id="I_1", repository="org/repo", number=1, title="T",
-        url="u", state="OPEN", body="", assignees=["alice"],
+        id="I_1",
+        repository="org/repo",
+        number=1,
+        title="T",
+        url="u",
+        state="OPEN",
+        body="",
+        assignees=["alice"],
     )
     pr = GitHubPullRequest(
-        id="PR_1", repository="org/repo", number=2, title="P",
-        url="u", state="OPEN", body="",
+        id="PR_1",
+        repository="org/repo",
+        number=2,
+        title="P",
+        url="u",
+        state="OPEN",
+        body="",
     )
     with (
         patch("github_audit.discovery.fetch_repositories", return_value=["org/repo"]),

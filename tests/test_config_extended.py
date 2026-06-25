@@ -170,15 +170,20 @@ def test_settings_requires_at_least_one_item_type(monkeypatch: MonkeyPatch, tmp_
 
 
 def test_settings_negative_project_number_rejected() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="GITHUB_PROJECT_NUMBER"):
         _settings(github_project_number=-1)
 
 
 def test_settings_invalid_confidence_rejected() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="AUTO_APPLY_MIN_CONFIDENCE"):
         _settings(auto_apply_min_confidence=1.5)
 
 
 def test_settings_invalid_timeout_rejected() -> None:
-    with pytest.raises(Exception):
+    with pytest.raises(ValueError, match="LLM_TIMEOUT_SECONDS"):
         _settings(llm_timeout_seconds=-1)
+
+
+def test_settings_rejects_reversed_updated_range() -> None:
+    with pytest.raises(ValueError, match="GITHUB_UPDATED_FROM"):
+        _settings(github_updated_from="2026-06-30", github_updated_to="2026-06-01")

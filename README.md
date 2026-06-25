@@ -25,6 +25,9 @@ uv run github-audit discover
 # Audit issues and PRs for missing fields
 uv run github-audit scan
 
+# Open local Streamlit UI
+uv run streamlit run app.py
+
 # Export results
 uv run github-audit scan --markdown report.md
 uv run github-audit scan --csv report.csv
@@ -53,6 +56,10 @@ All settings are read from `.env`. See [`.env.example`](.env.example) for the fu
 | `GITHUB_ORG` | Organization name |
 | `GITHUB_PROJECT_NUMBER` | Project number from the URL |
 | `GITHUB_PROJECT_NUMBERS` | Comma-separated list for multiple projects |
+| `GITHUB_INCLUDE_ALL_PROJECTS` | Fetch every org Project V2 at scan time |
+| `GITHUB_INCLUDE_CLOSED_PROJECTS` | Include closed Project V2 boards when fetching all projects |
+| `GITHUB_UPDATED_FROM` | Optional updated-date lower bound, `YYYY-MM-DD` |
+| `GITHUB_UPDATED_TO` | Optional updated-date upper bound, `YYYY-MM-DD` |
 | `TARGET_ASSIGNEES` | GitHub usernames to audit |
 | `REQUIRED_PROJECT_FIELDS` | Fields that must be set (comma-separated) |
 | `REQUIRE_DEVELOPMENT_LINK` | Require a linked PR or branch |

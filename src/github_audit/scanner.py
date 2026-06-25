@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date, datetime
+
 from github_audit.config import Settings
 from github_audit.github_client import GitHubClient
 from github_audit.models import (
@@ -65,6 +67,8 @@ def scan(
     issue_count = 0
     pull_request_count = 0
     for content in content_by_id.values():
+        if not in_updated_range(content, settings):
+            continue
         if isinstance(content, GitHubIssue):
             issue_count += 1
         if isinstance(content, GitHubPullRequest):
@@ -109,6 +113,7 @@ def content_from_project_item(
             assignees=item.assignees,
             labels=item.labels,
             milestone=item.milestone,
+            updated_at=item.updated_at,
             linked_pull_requests_count=item.linked_pull_requests_count,
         )
     if item.content_type == "pull_request":
@@ -123,6 +128,27 @@ def content_from_project_item(
             assignees=item.assignees,
             labels=item.labels,
             milestone=item.milestone,
+            updated_at=item.updated_at,
             closing_issues_count=item.closing_issues_count,
         )
     return None
+
+
+def in_updated_range(content: GitHubContent, settings: Settings) -> bool:
+    if settings.github_updated_from is None and settings.github_updated_to is None:
+        return True
+    updated = parse_github_date(content.updated_at)
+    if updated is None:
+        return False
+    if settings.github_updated_from is not None and updated < settings.github_updated_from:
+        return False
+    return settings.github_updated_to is None or updated <= settings.github_updated_to
+
+
+def parse_github_date(value: str | None) -> date | None:
+    if not value:
+        return None
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
+    except ValueError:
+        return None
