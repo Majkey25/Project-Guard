@@ -346,7 +346,7 @@ with st.sidebar:
     st.caption(f"Scope: projects `{project_scope or 'none'}` · repos `{repo_scope or 'none'}`")
     st.caption(f"Updated: `{time_scope}`")
 
-    with st.expander("🤖 AI Assistant (LLM)", expanded=False):
+    with st.expander("🧠 AI Assistant (LLM)", expanded=False):
         llm_provider = st.selectbox(
             "Provider",
             ["openai", "azure", "openai-compatible"],
@@ -687,7 +687,7 @@ if llm_ready:
         })
 
     st.divider()
-    st.subheader("🤖 AI Analysis")
+    st.subheader("🧠 AI Analysis")
 
     # ── NL filter ─────────────────────────────────────────────────────────────
     with st.expander("🗣️ Natural Language Filter", expanded=False):
@@ -853,7 +853,7 @@ if llm_ready:
 
         if st.session_state.ai_suggestion:
             s = st.session_state.ai_suggestion
-            with st.expander("✨ AI Suggestion", expanded=True):
+            with st.expander("🧠 AI Suggestion", expanded=True):
                 cols = st.columns(3)
                 cols[0].metric("Estimate", s.estimated_points or "—")
                 cols[1].metric("Priority", s.priority or "—")
@@ -866,7 +866,7 @@ if llm_ready:
 
         if st.session_state.ai_explanation:
             e = st.session_state.ai_explanation
-            with st.expander("❓ AI Explanation", expanded=True):
+            with st.expander("💡 AI Explanation", expanded=True):
                 st.markdown(f"**Why it matters:** {e.explanation}")
                 st.markdown(f"**Impact:** {e.impact}")
                 st.markdown(f"**Suggested fix:** {e.suggested_fix}")
