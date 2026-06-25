@@ -83,16 +83,9 @@ def discover_project(
     required_missing = [
         name for name in settings.required_project_fields if name not in field_names
     ]
-    limitations = [
-        "Development sidebar branch links are not used for scan unless discovery proves "
-        "GraphQL access."
-    ]
-    if branch_available:
-        limitations.append(
-            "Branch link API exists, but scan still treats closing references as source of truth."
-        )
-    else:
-        limitations.append(f"Branch link probe failed: {branch_detail}")
+    limitations: list[str] = []
+    if not branch_available:
+        limitations.append(f"Branch link probe: {branch_detail}")
     content_types = sorted({item.content_type for item in project_items})
     return DiscoveryResult(
         organization=settings.github_org,

@@ -29,6 +29,8 @@ def scan_all(
         include_issues=settings.include_issues,
         include_pull_requests=settings.include_pull_requests,
         include_closed_issues=settings.include_closed_issues,
+        include_closed_pull_requests=settings.include_closed_pull_requests,
+        include_unassigned=settings.include_unassigned,
     )
     return [scan(client, settings, discovery, searched_items) for discovery in discoveries]
 

@@ -105,6 +105,47 @@ class DiscoveryResult(BaseModel):
     development_limitations: list[str]
 
 
+class SeverityScore(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    severity: Literal["HIGH", "MEDIUM", "LOW"]
+    reason: str
+
+
+class SeverityScoreList(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    scores: list[SeverityScore]
+
+
+class BatchTriageResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    root_causes: list[str]
+    top_priority_action: str
+    recommendations: list[str]
+    team_process_insight: str
+
+
+class RuleExplanation(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    explanation: str
+    impact: str
+    suggested_fix: str
+
+
+class NLFilterResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title_search: str = ""
+    item_types: list[str] = Field(default_factory=list)
+    missing_fields: list[str] = Field(default_factory=list)
+    assignees: list[str] = Field(default_factory=list)
+    repositories: list[str] = Field(default_factory=list)
+    explanation: str
+
+
 class LLMSuggestion(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

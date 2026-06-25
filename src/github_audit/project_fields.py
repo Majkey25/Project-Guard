@@ -423,17 +423,29 @@ def search_items(
     include_issues: bool,
     include_pull_requests: bool,
     include_closed_issues: bool,
+    include_closed_pull_requests: bool = False,
+    include_unassigned: bool = False,
 ) -> list[GitHubContent]:
     items_by_id: dict[str, GitHubContent] = {}
-    states = "" if include_closed_issues else " is:open"
+    issue_states = "" if include_closed_issues else " is:open"
+    pr_states = "" if include_closed_pull_requests else " is:open"
     for repository in repositories:
         for assignee in assignees:
             if include_issues:
-                query = f"repo:{repository} is:issue assignee:{assignee}{states}"
+                query = f"repo:{repository} is:issue assignee:{assignee}{issue_states}"
                 for item in run_search(client, query):
                     items_by_id[item.id] = item
             if include_pull_requests:
-                query = f"repo:{repository} is:pr assignee:{assignee}{states}"
+                query = f"repo:{repository} is:pr assignee:{assignee}{pr_states}"
+                for item in run_search(client, query):
+                    items_by_id[item.id] = item
+        if include_unassigned:
+            if include_issues:
+                query = f"repo:{repository} is:issue no:assignee{issue_states}"
+                for item in run_search(client, query):
+                    items_by_id[item.id] = item
+            if include_pull_requests:
+                query = f"repo:{repository} is:pr no:assignee{pr_states}"
                 for item in run_search(client, query):
                     items_by_id[item.id] = item
     return list(items_by_id.values())

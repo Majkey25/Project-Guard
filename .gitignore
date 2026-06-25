@@ -7,3 +7,6 @@ __pycache__/
 .reference/tmp/
 *.egg-info/
 dist/
+.streamlit/secrets.toml
+*.local.toml
+*.local.env

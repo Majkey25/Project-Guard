@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import date
 from typing import Literal
 
@@ -12,6 +13,9 @@ from pydantic import (
     model_validator,
 )
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
+_REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
 
 
 def split_csv(value: str) -> list[str]:
@@ -85,8 +89,12 @@ class Settings(BaseSettings):
     )
 
     include_closed_issues: bool = Field(default=False, validation_alias="INCLUDE_CLOSED_ISSUES")
+    include_closed_pull_requests: bool = Field(
+        default=False, validation_alias="INCLUDE_CLOSED_PULL_REQUESTS"
+    )
     include_pull_requests: bool = Field(default=True, validation_alias="INCLUDE_PULL_REQUESTS")
     include_issues: bool = Field(default=True, validation_alias="INCLUDE_ISSUES")
+    include_unassigned: bool = Field(default=False, validation_alias="INCLUDE_UNASSIGNED")
     github_updated_from: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_FROM")
     github_updated_to: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_TO")
 
@@ -122,6 +130,33 @@ class Settings(BaseSettings):
             msg = labels.get(info.field_name or "", "value must not be empty")
             raise ValueError(msg)
         return value.strip()
+
+    @field_validator("llm_api_key", "llm_base_url", "llm_model_name", "llm_api_version")
+    @classmethod
+    def strip_llm_fields(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("target_assignees_raw")
+    @classmethod
+    def validate_assignees(cls, value: str) -> str:
+        for part in split_csv(value):
+            if not _USERNAME_RE.match(part):
+                msg = f"Invalid GitHub username: {part!r} (only letters, digits, hyphens allowed)"
+                raise ValueError(msg)
+        if len(split_csv(value)) > 50:
+            msg = "TARGET_ASSIGNEES: maximum 50 accounts"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("github_repository_allowlist_raw", "github_repository_denylist_raw")
+    @classmethod
+    def validate_repo_names(cls, value: str) -> str:
+        for part in split_csv(value):
+            name = part.split("/")[-1]  # accept bare name or org/name
+            if not _REPO_NAME_RE.match(name):
+                msg = f"Invalid repository name: {part!r}"
+                raise ValueError(msg)
+        return value
 
     @field_validator("github_project_number")
     @classmethod

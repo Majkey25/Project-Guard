@@ -49,8 +49,7 @@ class GitHubClient:
             msg = "GitHub GraphQL request was not sent"
             raise GitHubError(msg)
         if response.status_code >= 400:
-            detail = response.text[:500]
-            msg = f"GitHub GraphQL HTTP {response.status_code}: {detail}"
+            msg = f"GitHub API returned HTTP {response.status_code}"
             raise GitHubError(msg)
         raw = response.json()
         if not isinstance(raw, dict):

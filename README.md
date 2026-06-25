@@ -1,99 +1,121 @@
-# github-audit
+# GitHub Audit
 
-Audits GitHub Issues and Pull Requests against required GitHub Project V2 metadata fields. Connects via the GitHub GraphQL API using a personal access token, then reports which items are missing fields like Estimate, Priority, or Status.
+Local tool for checking GitHub Issues and Pull Requests against your GitHub Project V2 workflow.
 
-## Requirements
+It answers one practical question:
 
-- Python 3.12+
-- [uv](https://docs.astral.sh/uv/)
-- A GitHub personal access token (classic) with `repo`, `read:org`, `read:project` scopes
+> Which items are missing the fields or links my team expects?
 
-## Installation
+## What It Checks
+
+- Missing Project V2 fields, for example `Estimate`, `Priority`, `Status`, `Iteration`.
+- Missing assignees or missing target assignees.
+- Items missing from the selected project board, if you enable that check.
+- Issues or PRs without a development link.
+- Optional date range, for example last 30 days or custom `from` / `to`.
+- One project, many projects, or all projects in an organization.
+- One repo, many repos, or all organization repos.
+
+## Quick Start
 
 ```sh
 uv sync
-cp .env.example .env
-# fill in GITHUB_TOKEN, GITHUB_ORG, GITHUB_PROJECT_NUMBER, TARGET_ASSIGNEES
-```
-
-## Usage
-
-```sh
-# Discover repositories and project structure
-uv run github-audit discover
-
-# Audit issues and PRs for missing fields
-uv run github-audit scan
-
-# Open local Streamlit UI
+copy .env.example .env
 uv run streamlit run app.py
-
-# Export results
-uv run github-audit scan --markdown report.md
-uv run github-audit scan --csv report.csv
-uv run github-audit scan --json
-
-# Get LLM suggestions for missing fields
-uv run github-audit suggest
-
-# Preview what apply would change (read-only)
-uv run github-audit apply --dry-run
-
-# Write suggested field values back to GitHub Projects
-uv run github-audit apply --yes
-
-# Scrape the project table via browser (no token required)
-uv run github-audit browser-scan
 ```
+
+Then open the Streamlit page and fill in the sidebar form.
+
+Most users only need:
+
+| Setting | What to enter |
+|---|---|
+| GitHub token | Classic PAT with read scopes |
+| Organization | GitHub org name, for example `OKsystem` |
+| Projects | Project numbers/URLs, or enable all org projects |
+| Repositories | Repo allowlist, or enable all org repositories |
+| Accounts to watch | GitHub usernames to audit |
+| Required fields | Project fields that must be filled |
+| Checks to flag | Turn each rule on/off |
+| Time range | All time, last 30 days, or custom range |
+
+## GitHub Token
+
+Create a classic GitHub personal access token.
+
+Read-only scans need:
+
+- `repo`
+- `read:org`
+- `read:project`
+
+Writing suggested values back needs:
+
+- `repo`
+- `read:org`
+- `project`
+
+If your organization uses SAML SSO, authorize the token for the organization after creating it.
 
 ## Configuration
 
-All settings are read from `.env`. See [`.env.example`](.env.example) for the full list.
+The app reads `.env` for defaults, but Streamlit form changes stay local to that browser session.
 
-| Variable | Description |
+Useful `.env` values:
+
+| Variable | Meaning |
 |---|---|
-| `GITHUB_TOKEN` | Personal access token |
+| `GITHUB_TOKEN` | GitHub PAT |
 | `GITHUB_ORG` | Organization name |
-| `GITHUB_PROJECT_NUMBER` | Project number from the URL |
-| `GITHUB_PROJECT_NUMBERS` | Comma-separated list for multiple projects |
-| `GITHUB_INCLUDE_ALL_PROJECTS` | Fetch every org Project V2 at scan time |
-| `GITHUB_INCLUDE_CLOSED_PROJECTS` | Include closed Project V2 boards when fetching all projects |
-| `GITHUB_UPDATED_FROM` | Optional updated-date lower bound, `YYYY-MM-DD` |
-| `GITHUB_UPDATED_TO` | Optional updated-date upper bound, `YYYY-MM-DD` |
-| `TARGET_ASSIGNEES` | GitHub usernames to audit |
-| `REQUIRED_PROJECT_FIELDS` | Fields that must be set (comma-separated) |
-| `REQUIRE_DEVELOPMENT_LINK` | Require a linked PR or branch |
-| `LLM_PROVIDER` | `openai`, `openai-compatible`, or `azure` |
-| `LLM_MODEL_NAME` | Model name passed to the provider |
-| `LLM_API_KEY` | API key for the LLM provider |
-| `AUTO_APPLY` | Set `true` to allow `apply --yes` to write |
-| `AUTO_APPLY_MIN_CONFIDENCE` | Minimum LLM confidence to auto-apply (0–1) |
+| `GITHUB_PROJECT_NUMBER` | One project number |
+| `GITHUB_PROJECT_NUMBERS` | Multiple project numbers |
+| `GITHUB_INCLUDE_ALL_PROJECTS` | `true` scans all org Project V2 boards |
+| `GITHUB_INCLUDE_CLOSED_PROJECTS` | `true` includes closed boards when scanning all projects |
+| `GITHUB_REPOSITORY_ALLOWLIST` | Comma-separated repo names |
+| `GITHUB_INCLUDE_ALL_REPOSITORIES` | `true` scans all non-archived org repos |
+| `GITHUB_REPOSITORY_DENYLIST` | Repo names to skip |
+| `TARGET_ASSIGNEES` | GitHub usernames to watch |
+| `REQUIRED_PROJECT_FIELDS` | Required Project V2 fields |
+| `REQUIRE_PROJECT_ITEM` | `true` flags repo items missing from selected project board |
+| `GITHUB_UPDATED_FROM` | Optional `YYYY-MM-DD` lower bound |
+| `GITHUB_UPDATED_TO` | Optional `YYYY-MM-DD` upper bound |
 
-## Token scopes
+## CLI
 
-Read-only (`discover`, `scan`, `suggest`, `apply --dry-run`): `repo`, `read:org`, `read:project`
+Streamlit is the easiest way to use the tool. CLI commands are still available:
 
-Write (`apply --yes`): `repo`, `read:org`, `project`
+```sh
+uv run github-audit discover
+uv run github-audit scan
+uv run github-audit scan --markdown report.md
+uv run github-audit scan --csv report.csv
+uv run github-audit scan --json
+```
 
-If the organization requires SAML SSO, authorize the token for the org after generating it.
+LLM-assisted suggestions:
 
-## Browser mode
+```sh
+uv run github-audit suggest
+uv run github-audit apply --dry-run
+uv run github-audit apply --yes
+```
 
-`browser-scan` opens a temporary local browser profile, navigates to the project, and scrapes the visible table rows. No token needed. Sign in when the browser opens, navigate to the Project table view, then press Enter in the terminal.
+`apply --yes` writes only when `AUTO_APPLY=true` and confidence is high enough.
 
-Browser mode is read-only and limited to rows rendered on screen. Use token mode for complete paginated data.
+## Browser Mode
 
-## Safety
+```sh
+uv run github-audit browser-scan
+```
 
-- `discover`, `scan`, `suggest`, and `apply --dry-run` are read-only.
-- `apply --yes` only writes when `AUTO_APPLY=true` and the LLM confidence meets `AUTO_APPLY_MIN_CONFIDENCE`.
-- Existing field values are never overwritten.
-- LLM suggestions do not determine whether a field is missing — only the GraphQL data does.
+This opens a temporary browser profile and scrapes the visible GitHub Project table.
+
+Use it when you cannot use a token. It is read-only, but limited to visible rows. Token mode is required for complete paginated audits.
 
 ## Development
 
 ```sh
-uv run pytest
+uv run ruff check .
 uv run pyright
-uv run ruff check
+uv run pytest
 ```
