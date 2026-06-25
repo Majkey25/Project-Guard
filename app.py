@@ -56,7 +56,8 @@ def _project_numbers(value: str) -> str:
         if not part:
             continue
         match = re.search(r"/projects/(\d+)", part) or re.fullmatch(r"#?(\d+)", part)
-        numbers.append(match.group(1) if match else part)
+        if match:
+            numbers.append(match.group(1))
     return ",".join(dict.fromkeys(numbers))
 
 
@@ -92,12 +93,13 @@ def _csv_bytes(rows: list[FindingRow]) -> bytes:
 
 # ── load .env defaults (read once, cached) ────────────────────────────────────
 _MAX_ENV_BYTES = 64 * 1024  # 64 KB
+_ENV_PATH = Path(__file__).parent / ".env"
 
 
 @st.cache_data(show_spinner=False)
 def _load_env() -> dict[str, str]:
     d: dict[str, str] = {}
-    path = Path(".env")
+    path = _ENV_PATH
     if path.exists() and path.stat().st_size <= _MAX_ENV_BYTES:
         for raw in path.read_text(encoding="utf-8").splitlines():
             line = raw.strip()
@@ -113,7 +115,7 @@ def _write_env_keys(updates: dict[str, str]) -> None:
         if "\n" in v or "\r" in v:
             msg = "env value must not contain newlines"
             raise ValueError(msg)
-    path = Path(".env")
+    path = _ENV_PATH
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
     written: set[str] = set()
     new_lines: list[str] = []
@@ -442,7 +444,11 @@ def _run_scan() -> None:
                 "github_repository_denylist_raw": _csv(repo_denylist),
             }
         )
-    except (ValidationError, ValueError) as exc:
+    except ValidationError as exc:
+        msgs = "; ".join(e["msg"] for e in exc.errors())
+        st.session_state.error = f"Configuration error: {msgs}"
+        return
+    except ValueError as exc:
         st.session_state.error = str(exc)
         return
 

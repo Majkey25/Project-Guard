@@ -110,7 +110,7 @@ def build_prompt(finding: AuditFinding) -> str:
     return "\n".join([
         f"Repository: {finding.repository}",
         f"Item: {finding.item_type} #{finding.number}",
-        f"Title: {finding.title}",
+        f"Title: <title>{finding.title}</title>",
         f"URL: {finding.url}",
         f"Assignees: {', '.join(finding.assignees) or 'none'}",
         f"Missing fields: {', '.join(finding.missing_fields)}",
@@ -164,7 +164,7 @@ def build_severity_prompt(findings: list[AuditFinding]) -> str:
 def build_explain_prompt(finding: AuditFinding, rule: str) -> str:
     return "\n".join([
         f"Rule triggered: {rule}",
-        f"Item: {finding.item_type} #{finding.number} — {finding.title}",
+        f"Item: {finding.item_type} #{finding.number} — <title>{finding.title}</title>",
         f"Repository: {finding.repository}",
         f"Assignees: {', '.join(finding.assignees) or 'none'}",
         f"All missing fields: {', '.join(finding.missing_fields)}",
@@ -179,7 +179,7 @@ def build_nl_prompt(
     available_fields: list[str],
 ) -> str:
     return "\n".join([
-        f"User query: {query}",
+        f"User query: <query>{query[:500]}</query>",
         "",
         f"Available repositories: {', '.join(available_repos) or 'none'}",
         f"Available assignees: {', '.join(available_assignees) or 'none'}",

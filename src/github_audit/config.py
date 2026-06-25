@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from datetime import date
 from typing import Literal
+from urllib.parse import urlparse
 
 from pydantic import (
     AliasChoices,
@@ -131,10 +132,42 @@ class Settings(BaseSettings):
             raise ValueError(msg)
         return value.strip()
 
-    @field_validator("llm_api_key", "llm_base_url", "llm_model_name", "llm_api_version")
+    @field_validator("llm_api_key", "llm_model_name", "llm_api_version")
     @classmethod
     def strip_llm_fields(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("llm_base_url")
+    @classmethod
+    def validate_base_url(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            return value
+        try:
+            parsed = urlparse(value)
+        except ValueError as exc:
+            msg = "LLM_BASE_URL is not a valid URL"
+            raise ValueError(msg) from exc
+        if parsed.scheme not in {"https", "http"}:
+            msg = "LLM_BASE_URL must use http or https scheme"
+            raise ValueError(msg)
+        host = parsed.hostname or ""
+        # Block cloud metadata endpoints and RFC 1918 ranges to prevent SSRF.
+        _SSRF_BLOCKED = ("169.254.", "::1", "0.0.0.0")
+        _SSRF_BLOCKED_HOSTS = {"metadata.google.internal"}
+        if any(host.startswith(p) for p in _SSRF_BLOCKED) or host in _SSRF_BLOCKED_HOSTS:
+            msg = f"LLM_BASE_URL host {host!r} is not permitted"
+            raise ValueError(msg)
+        return value
+
+    @field_validator("llm_model_name")
+    @classmethod
+    def validate_model_name(cls, value: str) -> str:
+        value = value.strip()
+        if value and not re.match(r"^[a-zA-Z0-9._:\-/]{1,100}$", value):
+            msg = "LLM_MODEL_NAME contains invalid characters"
+            raise ValueError(msg)
+        return value
 
     @field_validator("target_assignees_raw")
     @classmethod
