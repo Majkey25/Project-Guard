@@ -11,6 +11,8 @@ from github_audit.models import (
     GitHubContent,
     GitHubIssue,
     GitHubPullRequest,
+    MyWorkItem,
+    MyWorkResult,
     ProjectItem,
 )
 from github_audit.project_fields import fetch_project_items, search_items
@@ -154,3 +156,50 @@ def parse_github_date(value: str | None) -> date | None:
         return datetime.fromisoformat(value.replace("Z", "+00:00")).date()
     except ValueError:
         return None
+
+
+def build_my_work(
+    client: GitHubClient,
+    settings: Settings,
+    repositories: list[str],
+) -> MyWorkResult:
+    items = search_items(
+        client,
+        repositories,
+        settings.target_assignees,
+        include_issues=settings.include_issues,
+        include_pull_requests=settings.include_pull_requests,
+        include_closed_issues=False,
+        include_closed_pull_requests=False,
+        include_unassigned=False,
+    )
+    status_by_content_id: dict[str, str] = {}
+    for project_number in settings.github_project_numbers:
+        for project_item in fetch_project_items(client, settings.github_org, project_number):
+            if project_item.content_id and "Status" in project_item.field_values:
+                status_by_content_id[project_item.content_id] = str(
+                    project_item.field_values["Status"].value
+                )
+    target_set = set(settings.target_assignees)
+    result_items = [
+        MyWorkItem(
+            repository=item.repository,
+            item_type="issue" if isinstance(item, GitHubIssue) else "pull_request",
+            number=item.number,
+            title=item.title,
+            url=item.url,
+            updated_at=item.updated_at,
+            assignees=[a for a in item.assignees if a in target_set],
+            labels=item.labels,
+            milestone=item.milestone,
+            project_status=status_by_content_id.get(item.id),
+        )
+        for item in items
+        if any(a in target_set for a in item.assignees)
+    ]
+    result_items.sort(key=lambda x: (x.repository, x.item_type, x.number))
+    return MyWorkResult(
+        organization=settings.github_org,
+        assignees=settings.target_assignees,
+        items=result_items,
+    )

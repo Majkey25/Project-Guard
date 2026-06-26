@@ -99,6 +99,7 @@ class Settings(BaseSettings):
     github_updated_from: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_FROM")
     github_updated_to: date | None = Field(default=None, validation_alias="GITHUB_UPDATED_TO")
 
+    my_work_mode: bool = Field(default=False, validation_alias="MY_WORK_MODE")
     auto_apply: bool = Field(default=False, validation_alias="AUTO_APPLY")
     auto_apply_min_confidence: float = Field(
         default=0.85, validation_alias="AUTO_APPLY_MIN_CONFIDENCE"
@@ -217,7 +218,11 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_repository_scope(self) -> Settings:
-        if not self.github_include_all_projects and not self.github_project_numbers:
+        if (
+            not self.my_work_mode
+            and not self.github_include_all_projects
+            and not self.github_project_numbers
+        ):
             msg = "GITHUB_PROJECT_NUMBER or GITHUB_PROJECT_NUMBERS is required"
             raise ValueError(msg)
         if not self.github_include_all_repositories and not self.repository_allowlist:
@@ -286,10 +291,17 @@ class Settings(BaseSettings):
             raise ValueError(msg)
 
 
-def load_settings() -> Settings:
+def load_settings(*, my_work_mode: bool = False) -> Settings:
+    import os
+
+    if my_work_mode:
+        os.environ["MY_WORK_MODE"] = "true"
     try:
         return Settings()
     except ValidationError as exc:
         errors = "; ".join(error["msg"] for error in exc.errors())
         msg = f"Invalid configuration: {errors}"
         raise ValueError(msg) from exc
+    finally:
+        if my_work_mode:
+            os.environ.pop("MY_WORK_MODE", None)

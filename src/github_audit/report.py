@@ -15,7 +15,12 @@ from github_audit.models import (
     AuditResult,
     BrowserScanResult,
     DiscoveryResult,
+    MyWorkResult,
 )
+
+
+def _hr(char: str = "-", width: int = 60) -> str:
+    return char * width
 
 
 def to_json(model: BaseModel | Sequence[BaseModel]) -> str:
@@ -28,37 +33,57 @@ def to_json(model: BaseModel | Sequence[BaseModel]) -> str:
 
 
 def discovery_text(discovery: DiscoveryResult) -> str:
+    repo_names = ", ".join(r.split("/", 1)[-1] for r in discovery.repositories) or "none"
+    field_names = ", ".join(field.name for field in discovery.fields) or "none"
+    missing = ", ".join(discovery.required_fields_missing) or "none"
     lines = [
-        f"Organization: {discovery.organization}",
-        f"Project: #{discovery.project_number} {discovery.project_title}",
-        f"Repositories: {', '.join(discovery.repositories) or 'none'}",
-        f"Fields: {', '.join(field.name for field in discovery.fields) or 'none'}",
-        f"Missing required fields: {', '.join(discovery.required_fields_missing) or 'none'}",
-        f"Issue sample count: {discovery.issue_sample_count}",
-        f"PR sample count: {discovery.pull_request_sample_count}",
-        f"Project item sample count: {discovery.project_item_sample_count}",
+        f"Discovery: {discovery.organization}",
+        _hr("="),
+        f"Project #{discovery.project_number}: {discovery.project_title}",
+        f"Repos: {repo_names}",
+        "",
+        f"Fields: {field_names}",
+        f"Missing required: {missing}",
+        "",
+        f"Issues: {discovery.issue_sample_count}  PRs: {discovery.pull_request_sample_count}  Items: {discovery.project_item_sample_count}",
         f"Content types: {', '.join(discovery.content_types) or 'none'}",
-        f"Development strategy: {discovery.development_strategy}",
+        f"Strategy: {discovery.development_strategy}",
     ]
     lines.extend(f"Limitation: {limitation}" for limitation in discovery.development_limitations)
     return "\n".join(lines)
 
 
 def audit_text(audit: AuditResult) -> str:
+    project_info = (
+        f"Project #{audit.project_number}: {audit.project_title}"
+        if audit.project_number is not None
+        else "Projects: multiple"
+    )
+    repo_names = ", ".join(r.split("/", 1)[-1] for r in audit.repositories) or "none"
     lines = [
-        f"Organization: {audit.organization}",
-        (
-            f"Project: #{audit.project_number} {audit.project_title}"
-            if audit.project_number is not None
-            else "Projects: multiple"
-        ),
-        f"Repositories: {', '.join(audit.repositories) or 'none'}",
-        f"Scanned issues: {audit.scanned_issue_count}",
-        f"Scanned PRs: {audit.scanned_pull_request_count}",
-        f"Findings: {len(audit.findings)}",
+        f"GitHub Audit: {audit.organization}",
+        _hr("="),
+        project_info,
+        f"Repos: {repo_names}",
+        f"Issues: {audit.scanned_issue_count}  PRs: {audit.scanned_pull_request_count}  Findings: {len(audit.findings)}",
     ]
-    for finding in audit.findings:
-        lines.append(format_finding(finding))
+    if not audit.findings:
+        lines += ["", "No findings."]
+    else:
+        current_repo = ""
+        for finding in audit.findings:
+            if finding.repository != current_repo:
+                current_repo = finding.repository
+                lines += ["", _hr(), f"  {current_repo}", ""]
+            type_badge = "issue" if finding.item_type == "issue" else "PR   "
+            title = finding.title[:54] + "…" if len(finding.title) > 54 else finding.title
+            updated = f"  updated: {finding.updated_at}" if finding.updated_at else ""
+            lines += [
+                f"  [{type_badge}] #{finding.number}  {title}{updated}",
+                f"    Missing: {', '.join(finding.missing_fields)}",
+                f"    {finding.url}",
+                "",
+            ]
     lines.extend(f"Limitation: {limitation}" for limitation in audit.limitations)
     return "\n".join(lines)
 
@@ -170,3 +195,32 @@ def format_finding(finding: AuditFinding) -> str:
         f"{project}{finding.repository} {finding.item_type} #{finding.number}: "
         f"{', '.join(finding.missing_fields)}"
     )
+
+
+def my_work_text(result: MyWorkResult) -> str:
+    assignees_str = ", ".join(result.assignees) if result.assignees else "all"
+    lines = [f"My Open Work: {assignees_str}", _hr("="), ""]
+    if not result.items:
+        lines.append("No open items found.")
+        return "\n".join(lines)
+    current_repo = ""
+    for item in result.items:
+        if item.repository != current_repo:
+            current_repo = item.repository
+            lines += [_hr(), f"  {current_repo}", ""]
+        type_badge = "issue" if item.item_type == "issue" else "PR   "
+        title = item.title[:50] + "…" if len(item.title) > 50 else item.title
+        status = f"  [{item.project_status}]" if item.project_status else ""
+        updated = f"  updated: {item.updated_at}" if item.updated_at else ""
+        lines += [
+            f"  #{item.number:<5} [{type_badge}]  {title}{status}",
+            f"         {item.url}{updated}",
+            "",
+        ]
+    repo_count = len({i.repository for i in result.items})
+    lines += [
+        _hr(),
+        f"{len(result.items)} open item{'s' if len(result.items) != 1 else ''} "
+        f"across {repo_count} {'repositories' if repo_count != 1 else 'repository'}",
+    ]
+    return "\n".join(lines)

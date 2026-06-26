@@ -7,7 +7,7 @@ from pathlib import Path
 from github_audit.applier import apply_plan, build_apply_plan
 from github_audit.browser_scan import BrowserSettings, run_browser_scan
 from github_audit.config import Settings, load_settings
-from github_audit.discovery import discover_all
+from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import suggest_for_finding
 from github_audit.logging import configure_logging
@@ -17,11 +17,12 @@ from github_audit.report import (
     audit_text,
     browser_scan_text,
     discovery_text,
+    my_work_text,
     to_json,
     write_csv,
     write_markdown,
 )
-from github_audit.scanner import scan_all
+from github_audit.scanner import build_my_work, scan_all
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -48,6 +49,9 @@ def build_parser() -> argparse.ArgumentParser:
     browser_parser = subparsers.add_parser("browser-scan")
     browser_parser.add_argument("--project-url")
     browser_parser.add_argument("--json", action="store_true")
+
+    my_work_parser = subparsers.add_parser("my-work")
+    my_work_parser.add_argument("--json", action="store_true")
     return parser
 
 
@@ -62,6 +66,13 @@ def main(argv: list[str] | None = None) -> int:
                 project_url=args.project_url,
             )
             print(to_json(result) if args.json else browser_scan_text(result))
+            return 0
+        if args.command == "my-work":
+            settings = load_settings(my_work_mode=True)
+            with GitHubClient(settings.github_token) as client:
+                repos = discover_repositories(client, settings)
+                work = build_my_work(client, settings, repos)
+            print(to_json(work) if args.json else my_work_text(work))
             return 0
         settings = load_settings()
         with GitHubClient(settings.github_token) as client:

@@ -238,3 +238,26 @@ class BrowserScanResult(BaseModel):
     findings: list[BrowserProjectFinding]
     missing_headers: list[str]
     limitations: list[str] = Field(default_factory=list)
+
+
+class MyWorkItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str
+    item_type: ItemType
+    number: int
+    title: str
+    url: str
+    updated_at: str | None = None
+    assignees: list[str] = Field(default_factory=list)
+    labels: list[str] = Field(default_factory=list)
+    milestone: str | None = None
+    project_status: str | None = None
+
+
+class MyWorkResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    organization: str
+    assignees: list[str]
+    items: list[MyWorkItem]
