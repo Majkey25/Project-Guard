@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
+from typing import TYPE_CHECKING
+
+from pydantic import BaseModel
 
 from github_audit.config import Settings
 from github_audit.models import (
@@ -12,6 +15,9 @@ from github_audit.models import (
     SeverityScore,
     SeverityScoreList,
 )
+
+if TYPE_CHECKING:
+    from pydantic_ai import Agent
 
 _SUGGEST_INSTRUCTIONS = """
 Suggest missing GitHub workflow metadata. Do not claim a field is present or missing.
@@ -42,32 +48,46 @@ Only use values from the available options provided. Return empty lists if nothi
 """
 
 
-def _make_agent(settings: Settings, output_type, instructions: str):
+def _make_agent[LLMOutputT: BaseModel](
+    settings: Settings,
+    output_type: type[LLMOutputT],
+    instructions: str,
+) -> Agent[object, LLMOutputT]:
     settings.validate_llm()
     from pydantic_ai import Agent
-    from pydantic_ai.models.openai import OpenAIChatModel
-    from pydantic_ai.providers.azure import AzureProvider
-    from pydantic_ai.providers.openai import OpenAIProvider
 
     provider_name = settings.llm_provider_name
     if provider_name == "azure":
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.azure import AzureProvider
+
         provider = AzureProvider(
             azure_endpoint=settings.llm_base_url,
             api_key=settings.llm_api_key,
             api_version=settings.llm_api_version or None,
         )
+        model = OpenAIChatModel(settings.llm_model_name, provider=provider)
     elif provider_name in {"openai", "openai-compatible"}:
+        from pydantic_ai.models.openai import OpenAIChatModel
+        from pydantic_ai.providers.openai import OpenAIProvider
+
         provider = OpenAIProvider(
             api_key=settings.llm_api_key,
             base_url=settings.llm_base_url or None,
         )
+        model = OpenAIChatModel(settings.llm_model_name, provider=provider)
+    elif provider_name == "ollama":
+        from pydantic_ai.models.ollama import OllamaModel
+        from pydantic_ai.providers.ollama import OllamaProvider
+
+        base_url = settings.llm_base_url or "http://localhost:11434/v1"
+        model = OllamaModel(settings.llm_model_name, provider=OllamaProvider(base_url=base_url))
     else:
         msg = (
             f"unsupported LLM_PROVIDER={settings.llm_provider!r}; "
-            "supported: azure, openai, openai-compatible"
+            "supported: openai, azure, openai-compatible, ollama"
         )
         raise ValueError(msg)
-    model = OpenAIChatModel(settings.llm_model_name, provider=provider)
     return Agent(model, output_type=output_type, instructions=instructions)
 
 
@@ -106,17 +126,20 @@ def nl_to_filters(
 
 # ── prompt builders ───────────────────────────────────────────────────────────
 
+
 def build_prompt(finding: AuditFinding) -> str:
-    return "\n".join([
-        f"Repository: {finding.repository}",
-        f"Item: {finding.item_type} #{finding.number}",
-        f"Title: <title>{finding.title}</title>",
-        f"URL: {finding.url}",
-        f"Assignees: {', '.join(finding.assignees) or 'none'}",
-        f"Missing fields: {', '.join(finding.missing_fields)}",
-        f"Current project fields: {finding.current_project_fields}",
-        f"Development status: {finding.development_status}",
-    ])
+    return "\n".join(
+        [
+            f"Repository: {finding.repository}",
+            f"Item: {finding.item_type} #{finding.number}",
+            f"Title: <title>{finding.title}</title>",
+            f"URL: {finding.url}",
+            f"Assignees: {', '.join(finding.assignees) or 'none'}",
+            f"Missing fields: {', '.join(finding.missing_fields)}",
+            f"Current project fields: {finding.current_project_fields}",
+            f"Development status: {finding.development_status}",
+        ]
+    )
 
 
 def build_triage_prompt(findings: list[AuditFinding]) -> str:
@@ -162,14 +185,16 @@ def build_severity_prompt(findings: list[AuditFinding]) -> str:
 
 
 def build_explain_prompt(finding: AuditFinding, rule: str) -> str:
-    return "\n".join([
-        f"Rule triggered: {rule}",
-        f"Item: {finding.item_type} #{finding.number} — <title>{finding.title}</title>",
-        f"Repository: {finding.repository}",
-        f"Assignees: {', '.join(finding.assignees) or 'none'}",
-        f"All missing fields: {', '.join(finding.missing_fields)}",
-        f"Updated: {finding.updated_at or 'unknown'}",
-    ])
+    return "\n".join(
+        [
+            f"Rule triggered: {rule}",
+            f"Item: {finding.item_type} #{finding.number} — <title>{finding.title}</title>",
+            f"Repository: {finding.repository}",
+            f"Assignees: {', '.join(finding.assignees) or 'none'}",
+            f"All missing fields: {', '.join(finding.missing_fields)}",
+            f"Updated: {finding.updated_at or 'unknown'}",
+        ]
+    )
 
 
 def build_nl_prompt(
@@ -178,13 +203,15 @@ def build_nl_prompt(
     available_assignees: list[str],
     available_fields: list[str],
 ) -> str:
-    return "\n".join([
-        f"User query: <query>{query[:500]}</query>",
-        "",
-        f"Available repositories: {', '.join(available_repos) or 'none'}",
-        f"Available assignees: {', '.join(available_assignees) or 'none'}",
-        f"Available missing fields: {', '.join(available_fields) or 'none'}",
-        "Available item types: Issue, PR",
-        "",
-        "Map the query to filter criteria using only the available values above.",
-    ])
+    return "\n".join(
+        [
+            f"User query: <query>{query[:500]}</query>",
+            "",
+            f"Available repositories: {', '.join(available_repos) or 'none'}",
+            f"Available assignees: {', '.join(available_assignees) or 'none'}",
+            f"Available missing fields: {', '.join(available_fields) or 'none'}",
+            "Available item types: Issue, PR",
+            "",
+            "Map the query to filter criteria using only the available values above.",
+        ]
+    )

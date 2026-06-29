@@ -30,15 +30,17 @@ def _page_mock(
 
 
 def _browser_settings() -> BrowserSettings:
-    return BrowserSettings.model_validate(
-        {"github_org": "OKsystem", "github_project_number": 1}
-    )
+    return BrowserSettings.model_validate({"github_org": "OKsystem", "github_project_number": 1})
 
 
 def _scan_result() -> BrowserScanResult:
     return BrowserScanResult(
-        url="u", title="t", signed_in=True,
-        headers=[], findings=[], missing_headers=[],
+        url="u",
+        title="t",
+        signed_in=True,
+        headers=[],
+        findings=[],
+        missing_headers=[],
     )
 
 
@@ -82,11 +84,21 @@ def test_collect_deduplicates_rows_across_scrolls() -> None:
     page = MagicMock()
     row = ["Issue 1", "3", "P1"]
     page.evaluate.side_effect = [
-        {"url": "u", "title": "t", "signed_in": True,
-         "headers": ["Title", "Estimate", "Priority"], "rows": [row]},
+        {
+            "url": "u",
+            "title": "t",
+            "signed_in": True,
+            "headers": ["Title", "Estimate", "Priority"],
+            "rows": [row],
+        },
         True,
-        {"url": "u", "title": "t", "signed_in": True,
-         "headers": ["Title", "Estimate", "Priority"], "rows": [row]},
+        {
+            "url": "u",
+            "title": "t",
+            "signed_in": True,
+            "headers": ["Title", "Estimate", "Priority"],
+            "rows": [row],
+        },
         False,
     ]
     result = collect_browser_scan(page, [])  # type: ignore[arg-type]

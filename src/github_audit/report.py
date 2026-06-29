@@ -45,7 +45,11 @@ def discovery_text(discovery: DiscoveryResult) -> str:
         f"Fields: {field_names}",
         f"Missing required: {missing}",
         "",
-        f"Issues: {discovery.issue_sample_count}  PRs: {discovery.pull_request_sample_count}  Items: {discovery.project_item_sample_count}",
+        (
+            f"Issues: {discovery.issue_sample_count}  "
+            f"PRs: {discovery.pull_request_sample_count}  "
+            f"Items: {discovery.project_item_sample_count}"
+        ),
         f"Content types: {', '.join(discovery.content_types) or 'none'}",
         f"Strategy: {discovery.development_strategy}",
     ]
@@ -65,7 +69,11 @@ def audit_text(audit: AuditResult) -> str:
         _hr("="),
         project_info,
         f"Repos: {repo_names}",
-        f"Issues: {audit.scanned_issue_count}  PRs: {audit.scanned_pull_request_count}  Findings: {len(audit.findings)}",
+        (
+            f"Issues: {audit.scanned_issue_count}  "
+            f"PRs: {audit.scanned_pull_request_count}  "
+            f"Findings: {len(audit.findings)}"
+        ),
     ]
     if not audit.findings:
         lines += ["", "No findings."]

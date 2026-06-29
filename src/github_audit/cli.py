@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import sys
+from io import TextIOWrapper
 from pathlib import Path
 
 from github_audit.applier import apply_plan, build_apply_plan
@@ -55,7 +56,14 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _configure_utf8_stdio() -> None:
+    for stream in (sys.stdout, sys.stderr):
+        if isinstance(stream, TextIOWrapper):
+            stream.reconfigure(encoding="utf-8")
+
+
 def main(argv: list[str] | None = None) -> int:
+    _configure_utf8_stdio()
     parser = build_parser()
     args = parser.parse_args(argv)
     configure_logging(bool(args.verbose))

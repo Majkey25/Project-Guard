@@ -286,7 +286,9 @@ class Settings(BaseSettings):
         if not self.llm_model_name.strip():
             msg = "LLM_MODEL_NAME is required for suggest/apply suggestions"
             raise ValueError(msg)
-        if not self.llm_api_key.strip():
+        # Local providers (ollama) don't need an API key
+        _LOCAL_PROVIDERS = {"ollama"}
+        if self.llm_provider_name not in _LOCAL_PROVIDERS and not self.llm_api_key.strip():
             msg = "LLM_API_KEY is required for suggest/apply suggestions"
             raise ValueError(msg)
 

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import pytest
-
 from typing import Literal
+
+import pytest
 
 from github_audit.llm_evaluator import (
     build_explain_prompt,
@@ -52,6 +52,7 @@ def test_pydantic_ai_import_paths_exist() -> None:
 
 # ── build_prompt ──────────────────────────────────────────────────────────────
 
+
 def test_build_prompt_contains_missing_fields() -> None:
     finding = _finding()
     prompt = build_prompt(finding)
@@ -69,6 +70,7 @@ def test_build_prompt_no_assignees() -> None:
 
 
 # ── build_triage_prompt ──────────────────────────────────────────────────────
+
 
 def test_triage_prompt_shows_total() -> None:
     findings = [_finding(number=i) for i in range(5)]
@@ -94,6 +96,7 @@ def test_triage_prompt_caps_sample_at_15() -> None:
 
 # ── build_severity_prompt ────────────────────────────────────────────────────
 
+
 def test_severity_prompt_numbers_findings() -> None:
     findings = [_finding(number=1), _finding(number=2)]
     prompt = build_severity_prompt(findings)
@@ -108,6 +111,7 @@ def test_severity_prompt_includes_repo() -> None:
 
 # ── build_explain_prompt ─────────────────────────────────────────────────────
 
+
 def test_explain_prompt_contains_rule() -> None:
     prompt = build_explain_prompt(_finding(), "Missing Estimate")
     assert "Missing Estimate" in prompt
@@ -119,6 +123,7 @@ def test_explain_prompt_contains_item_info() -> None:
 
 
 # ── build_nl_prompt ──────────────────────────────────────────────────────────
+
 
 def test_nl_prompt_contains_query() -> None:
     prompt = build_nl_prompt("urgent PRs", ["my-repo"], ["alice"], ["Priority"])
@@ -134,33 +139,38 @@ def test_nl_prompt_lists_options() -> None:
 
 # ── config security validators ────────────────────────────────────────────────
 
+
 def test_invalid_assignee_name_rejected() -> None:
     from pydantic import ValidationError
 
     from github_audit.config import Settings
 
     with pytest.raises(ValidationError, match="Invalid GitHub username"):
-        Settings.model_validate({
-            "github_token": "tok",
-            "github_org": "org",
-            "github_project_numbers_raw": "1",
-            "github_include_all_repositories": True,
-            "require_target_assignee": False,
-            "target_assignees_raw": "alice OR is:public",
-        })
+        Settings.model_validate(
+            {
+                "github_token": "tok",
+                "github_org": "org",
+                "github_project_numbers_raw": "1",
+                "github_include_all_repositories": True,
+                "require_target_assignee": False,
+                "target_assignees_raw": "alice OR is:public",
+            }
+        )
 
 
 def test_valid_assignee_names_accepted() -> None:
     from github_audit.config import Settings
 
-    s = Settings.model_validate({
-        "github_token": "tok",
-        "github_org": "org",
-        "github_project_numbers_raw": "1",
-        "github_include_all_repositories": True,
-        "require_target_assignee": False,
-        "target_assignees_raw": "alice,bob-smith,carol123",
-    })
+    s = Settings.model_validate(
+        {
+            "github_token": "tok",
+            "github_org": "org",
+            "github_project_numbers_raw": "1",
+            "github_include_all_repositories": True,
+            "require_target_assignee": False,
+            "target_assignees_raw": "alice,bob-smith,carol123",
+        }
+    )
     assert s.target_assignees == ["alice", "bob-smith", "carol123"]
 
 
@@ -171,14 +181,16 @@ def test_assignee_limit_enforced() -> None:
 
     too_many = ",".join(f"user{i}" for i in range(51))
     with pytest.raises(ValidationError, match="maximum 50"):
-        Settings.model_validate({
-            "github_token": "tok",
-            "github_org": "org",
-            "github_project_numbers_raw": "1",
-            "github_include_all_repositories": True,
-            "require_target_assignee": False,
-            "target_assignees_raw": too_many,
-        })
+        Settings.model_validate(
+            {
+                "github_token": "tok",
+                "github_org": "org",
+                "github_project_numbers_raw": "1",
+                "github_include_all_repositories": True,
+                "require_target_assignee": False,
+                "target_assignees_raw": too_many,
+            }
+        )
 
 
 def test_invalid_repo_name_rejected() -> None:
@@ -187,25 +199,29 @@ def test_invalid_repo_name_rejected() -> None:
     from github_audit.config import Settings
 
     with pytest.raises(ValidationError, match="Invalid repository name"):
-        Settings.model_validate({
-            "github_token": "tok",
-            "github_org": "org",
-            "github_project_numbers_raw": "1",
-            "github_include_all_repositories": True,
-            "require_target_assignee": False,
-            "github_repository_allowlist_raw": "my-repo is:public",
-        })
+        Settings.model_validate(
+            {
+                "github_token": "tok",
+                "github_org": "org",
+                "github_project_numbers_raw": "1",
+                "github_include_all_repositories": True,
+                "require_target_assignee": False,
+                "github_repository_allowlist_raw": "my-repo is:public",
+            }
+        )
 
 
 def test_llm_api_key_stripped() -> None:
     from github_audit.config import Settings
 
-    s = Settings.model_validate({
-        "github_token": "tok",
-        "github_org": "org",
-        "github_project_numbers_raw": "1",
-        "github_include_all_repositories": True,
-        "require_target_assignee": False,
-        "llm_api_key": "  sk-abc  ",
-    })
+    s = Settings.model_validate(
+        {
+            "github_token": "tok",
+            "github_org": "org",
+            "github_project_numbers_raw": "1",
+            "github_include_all_repositories": True,
+            "require_target_assignee": False,
+            "llm_api_key": "  sk-abc  ",
+        }
+    )
     assert s.llm_api_key == "sk-abc"

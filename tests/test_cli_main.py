@@ -264,12 +264,15 @@ def test_cli_browser_scan_json_flag() -> None:
     from io import StringIO
 
     result = BrowserScanResult(
-        url="https://u", title="T", signed_in=True,
-        headers=[], findings=[], missing_headers=[],
+        url="https://u",
+        title="T",
+        signed_in=True,
+        headers=[],
+        findings=[],
+        missing_headers=[],
     )
     buf = StringIO()
-    with patch("github_audit.cli.run_browser_scan", return_value=result), \
-         patch("sys.stdout", buf):
+    with patch("github_audit.cli.run_browser_scan", return_value=result), patch("sys.stdout", buf):
         main(["browser-scan", "--json"])
     parsed = json.loads(buf.getvalue())
     assert "findings" in parsed
