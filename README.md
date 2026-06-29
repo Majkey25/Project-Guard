@@ -7,8 +7,9 @@
 [![Ruff](https://img.shields.io/badge/lint-Ruff-46aef7)](https://docs.astral.sh/ruff/)
 [![Pyright](https://img.shields.io/badge/types-Pyright%20strict-yellow)](https://github.com/microsoft/pyright)
 [![Tests](https://img.shields.io/badge/tests-pytest-blueviolet)](https://pytest.org/)
+[![CI](https://github.com/Majkey25/Project-Guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Majkey25/Project-Guard/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Majkey25/Project-Guard?label=release)](https://github.com/Majkey25/Project-Guard/releases)
-[![License](https://img.shields.io/badge/license-not%20specified-lightgrey)](#license)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 Local tool for checking GitHub Issues and Pull Requests against your GitHub Project V2 workflow.
 
@@ -208,4 +209,4 @@ uv run pytest
 
 ## License
 
-No license file is currently included. Without a license, the public repository is visible, but reuse rights are not granted by default.
+MIT — see [LICENSE](LICENSE).
