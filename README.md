@@ -1,10 +1,28 @@
 # GitHub Audit
 
+[![Repository](https://img.shields.io/badge/repository-public-brightgreen)](https://github.com/Majkey25/Project-Guard)
+[![Python](https://img.shields.io/badge/python-3.12%2B-blue)](https://www.python.org/)
+[![uv](https://img.shields.io/badge/package%20manager-uv-black)](https://docs.astral.sh/uv/)
+[![Streamlit](https://img.shields.io/badge/ui-Streamlit-ff4b4b)](https://streamlit.io/)
+[![Ruff](https://img.shields.io/badge/lint-Ruff-46aef7)](https://docs.astral.sh/ruff/)
+[![Pyright](https://img.shields.io/badge/types-Pyright%20strict-yellow)](https://github.com/microsoft/pyright)
+[![Tests](https://img.shields.io/badge/tests-pytest-blueviolet)](https://pytest.org/)
+[![Release](https://img.shields.io/github/v/release/Majkey25/Project-Guard?label=release)](https://github.com/Majkey25/Project-Guard/releases)
+[![License](https://img.shields.io/badge/license-not%20specified-lightgrey)](#license)
+
 Local tool for checking GitHub Issues and Pull Requests against your GitHub Project V2 workflow.
 
 It answers one practical question:
 
 > Which items are missing the fields or links my team expects?
+
+## Status
+
+- Repository: public GitHub repository.
+- Current package version: `0.1.0`.
+- Latest GitHub release: none published yet.
+- License: no license file is included yet.
+- CI: no GitHub Actions workflow is included yet; run the local checks below before release.
 
 ## What It Checks
 
@@ -112,10 +130,39 @@ This opens a temporary browser profile and scrapes the visible GitHub Project ta
 
 Use it when you cannot use a token. It is read-only, but limited to visible rows. Token mode is required for complete paginated audits.
 
+## Safety Notes
+
+- Keep real GitHub and LLM tokens in local `.env` or the Streamlit session only.
+- `.env`, `.streamlit/secrets.toml`, and local override files are ignored by git.
+- `.env.example` contains empty placeholders only.
+- `scan`, `discover`, `suggest`, and `browser-scan` are read-only.
+- `apply --dry-run` previews changes.
+- `apply --yes` can write to GitHub only when `AUTO_APPLY=true`.
+
+## Releases
+
+No GitHub release has been published yet.
+
+Before cutting a release, run:
+
+```sh
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
+uv run pytest
+```
+
+Then create a GitHub release from a validated commit and tag it with the package version, for example `v0.1.0`.
+
 ## Development
 
 ```sh
 uv run ruff check .
+uv run ruff format --check .
 uv run pyright
 uv run pytest
 ```
+
+## License
+
+No license file is currently included. Without a license, the public repository is visible, but reuse rights are not granted by default.

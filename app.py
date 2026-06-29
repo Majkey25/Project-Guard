@@ -169,7 +169,7 @@ with st.sidebar:
             "Personal Access Token",
             value=E.get("GITHUB_TOKEN", ""),
             type="password",
-            placeholder="ghp_xxxxxxxxxxxxxxxxxxxx",
+            placeholder="Paste GitHub token",
             help="Classic PAT · scopes: repo, read:org, read:project",
         )
         org = st.text_input(
@@ -359,7 +359,7 @@ with st.sidebar:
             "API Key",
             value=E.get("LLM_API_KEY", E.get("AZURE_API_KEY", "")),
             type="password",
-            placeholder="sk-... or Azure key",
+            placeholder="Paste provider API key",
             help="Your LLM provider API key. Saved to .env on this machine only.",
         )
         llm_model = st.text_input(
