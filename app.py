@@ -858,8 +858,7 @@ def _agent_reply(
                     ctx_parts.append(
                         "Recent chat:\n"
                         + "\n".join(
-                            f"{m['role'].upper()}: {m['content'][:300]}"
-                            for m in history[-5:-1]
+                            f"{m['role'].upper()}: {m['content'][:300]}" for m in history[-5:-1]
                         )
                     )
                 return general_chat(prompt, "\n\n".join(ctx_parts), _llm_settings())
@@ -929,9 +928,7 @@ def _render_agent_assistant() -> None:
 
     with st.form(key="agent_form", clear_on_submit=True):
         prompt = st.text_input("Message", placeholder="Ask...", label_visibility="collapsed")
-        submitted = st.form_submit_button(
-            "Send", icon=":material/send:", use_container_width=True
-        )
+        submitted = st.form_submit_button("Send", icon=":material/send:", use_container_width=True)
 
     if submitted and prompt:
         _add_agent_message("user", prompt)
