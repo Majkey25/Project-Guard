@@ -1020,6 +1020,12 @@ with fc4:
 with fc5:
     sel_proj_labels = st.multiselect("Project", all_proj_options)
 
+fd1, fd2, _fd3 = st.columns([1, 1, 3])
+with fd1:
+    date_from = st.date_input("Updated from", value=None, key="filter_date_from")
+with fd2:
+    date_to = st.date_input("Updated to", value=None, key="filter_date_to")
+
 sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
 
 filtered: list[FindingRow] = []
@@ -1036,6 +1042,18 @@ for row in rows:
         continue
     if sel_proj_nums and row["project"] not in sel_proj_nums:
         continue
+    if date_from or date_to:
+        raw = row["updated_at"]
+        try:
+            row_date = date.fromisoformat(raw[:10]) if raw else None
+        except ValueError:
+            row_date = None
+        if row_date is None:
+            continue
+        if date_from and row_date < date_from:
+            continue
+        if date_to and row_date > date_to:
+            continue
     filtered.append(row)
 
 st.caption(f"Showing **{len(filtered)}** of {len(rows)} findings")
