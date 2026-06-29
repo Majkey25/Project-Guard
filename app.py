@@ -685,11 +685,9 @@ def _pending_apply_reply() -> str:
     project_id = cast(str | None, st.session_state.agent_pending_project_id)
     fields = cast(list[ProjectFieldDefinition] | None, st.session_state.agent_pending_fields)
     if plan is None or project_id is None or fields is None:
-        return "No pending write. Ask me to set a field first."
-    if not _bool("AUTO_APPLY", "false"):
-        return "Write blocked. Set `AUTO_APPLY=true`, then ask `apply it` again."
+        return "No pending write. Select a finding and say e.g. `set estimate 5`."
     if not token.strip():
-        return "Write blocked. GitHub token is missing."
+        return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
     try:
         with GitHubClient(token) as client:
             result = apply_plan(
@@ -747,7 +745,9 @@ def _agent_reply(
 
     if command.field_request:
         if selected_finding is None:
-            replies.append("Select a target finding first, then ask for the field change.")
+            replies.append(
+                "Select a specific finding from the dropdown first, then say e.g. `set estimate 5`."
+            )
         elif selected_finding.project_number is None:
             replies.append("Cannot prepare write: selected finding has no project number.")
         else:
@@ -779,32 +779,60 @@ def _agent_reply(
                 if plan.skipped:
                     replies.extend(plan.skipped)
 
-    if command.explain and selected_finding is not None:
-        if llm_ready:
-            try:
-                from github_audit.llm_evaluator import explain_finding
+    if command.explain:
+        if selected_finding is not None:
+            if llm_ready:
+                try:
+                    from github_audit.llm_evaluator import explain_finding
 
-                rule = ", ".join(selected_finding.missing_fields) or "unknown rule"
-                explanation = explain_finding(selected_finding, rule, _llm_settings())
-                replies.append(explanation.explanation)
-                replies.append(f"Impact: {explanation.impact}")
-                replies.append(f"Suggested fix: {explanation.suggested_fix}")
-            except Exception as exc:
+                    rule = ", ".join(selected_finding.missing_fields) or "unknown rule"
+                    explanation = explain_finding(selected_finding, rule, _llm_settings())
+                    replies.append(explanation.explanation)
+                    replies.append(f"Impact: {explanation.impact}")
+                    replies.append(f"Suggested fix: {explanation.suggested_fix}")
+                except Exception as exc:
+                    replies.append(
+                        f"AI call failed: {exc}\n\n"
+                        "Check your API key in **⚙️ Config → 🧠 AI Assistant** "
+                        "or add `LLM_API_KEY` to `.env`. "
+                        "For Ollama (local/free): set `LLM_PROVIDER=ollama` — no key needed."
+                    )
+            else:
+                missing = ", ".join(selected_finding.missing_fields)
                 replies.append(
-                    f"AI call failed: {exc}\n\n"
-                    "Check your API key in **⚙️ Config → 🧠 AI Assistant** "
-                    "or add `LLM_API_KEY` to `.env`. "
-                    "For Ollama (local/free): set `LLM_PROVIDER=ollama` — no key needed."
+                    f"{selected_finding.item_type} #{selected_finding.number} "
+                    f"is missing: {missing}.\n\n"
+                    "To get AI explanations: add `LLM_API_KEY` + `LLM_MODEL_NAME` to `.env`, "
+                    "or configure them in **⚙️ Config → 🧠 AI Assistant**. "
+                    "For local/free: set `LLM_PROVIDER=ollama` — no key needed."
+                )
+        elif findings_store:
+            if llm_ready:
+                try:
+                    from github_audit.llm_evaluator import batch_triage
+
+                    result = batch_triage(list(findings_store.values()), _llm_settings())
+                    replies.append(f"**Top priority action:** {result.top_priority_action}")
+                    if result.root_causes:
+                        replies.append(
+                            "**Root causes:**\n" + "\n".join(f"- {c}" for c in result.root_causes)
+                        )
+                    if result.recommendations:
+                        replies.append(
+                            "**Recommendations:**\n"
+                            + "\n".join(f"- {r}" for r in result.recommendations)
+                        )
+                    if result.team_process_insight:
+                        replies.append(f"**Team insight:** {result.team_process_insight}")
+                except Exception as exc:
+                    replies.append(f"AI call failed: {exc}")
+            else:
+                replies.append(
+                    f"{len(findings_store)} findings loaded. "
+                    "Enable AI (LLM_MODEL_NAME + LLM_API_KEY or Ollama) to get a batch summary."
                 )
         else:
-            missing = ", ".join(selected_finding.missing_fields)
-            replies.append(
-                f"{selected_finding.item_type} #{selected_finding.number} "
-                f"is missing: {missing}.\n\n"
-                "To get AI explanations: add `LLM_API_KEY` + `LLM_MODEL_NAME` to `.env`, "
-                "or configure them in **⚙️ Config → 🧠 AI Assistant**. "
-                "For local/free: set `LLM_PROVIDER=ollama` — no key needed."
-            )
+            replies.append("No findings to explain. Run a scan first.")
 
     if not replies:
         replies.append(
@@ -831,31 +859,39 @@ def _render_agent_assistant() -> None:
     )
     stats = cast(ScanStats | None, st.session_state.stats)
 
+    _ALL_LABEL = "🔍 All findings"
     target_options = {
         f"#{row['number']} {row['title'][:40]}": (
             row["repository"],
             row["item_type"],
             row["number"],
         )
-        for row in all_rows[:100]
+        for row in all_rows[:200]
     }
     selected_key: tuple[str, str, int] | None = None
-    if target_options:
+    if all_rows:
         selected_label = st.selectbox(
             "Finding",
-            list(target_options),
+            [_ALL_LABEL, *target_options],
             key="agent_target_finding",
             label_visibility="collapsed",
         )
-        selected_key = target_options[selected_label]
-        selected = findings_store.get(selected_key)
-        if selected and selected.missing_fields:
-            st.caption(f"Missing: {', '.join(selected.missing_fields)}")
+        if selected_label != _ALL_LABEL:
+            selected_key = target_options[selected_label]
+            selected = findings_store.get(selected_key)
+            if selected and selected.missing_fields:
+                st.caption(f"Missing: {', '.join(selected.missing_fields)}")
+        else:
+            st.caption(f"{len(all_rows)} findings — say `explain` for a batch summary.")
 
     if not _agent_messages():
         _add_agent_message(
             "assistant",
-            "Ask about the scan or select a finding above and say `explain`.",
+            "**All findings** — say `explain` for a batch AI summary.\n\n"
+            "Select a specific finding to:\n"
+            "- `explain` — why it matters\n"
+            "- `set estimate 5` — write the value to GitHub (then confirm with `apply it`)\n"
+            "- `set iteration` — assign to the current sprint",
         )
 
     for message in _agent_messages():
