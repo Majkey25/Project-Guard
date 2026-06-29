@@ -198,6 +198,7 @@ with st.sidebar:
             "Personal Access Token",
             value=E.get("GITHUB_TOKEN", ""),
             type="password",
+            autocomplete="off",
             placeholder="Paste GitHub token",
             help="Classic PAT · scopes: repo, read:org, read:project",
         )
@@ -407,6 +408,7 @@ with st.sidebar:
             "API Key",
             value="" if _ollama else E.get("LLM_API_KEY", E.get("AZURE_API_KEY", "")),
             type="password",
+            autocomplete="off",
             placeholder="Not required for local Ollama" if _ollama else "Paste provider API key",
             disabled=_ollama,
             help=(
@@ -835,16 +837,44 @@ def _agent_reply(
             replies.append("No findings to explain. Run a scan first.")
 
     if not replies:
-        replies.append(
-            summarize_findings(
-                len(rows_for_summary),
-                len(filtered_for_summary),
-                stats_for_summary,
+        if llm_ready:
+            try:
+                from github_audit.llm_evaluator import general_chat
+
+                ctx_parts = [
+                    summarize_findings(
+                        len(rows_for_summary), len(filtered_for_summary), stats_for_summary
+                    )
+                ]
+                if selected_finding:
+                    ctx_parts.append(
+                        f"Selected finding: {selected_finding.item_type} "
+                        f"#{selected_finding.number} '{selected_finding.title}' "
+                        f"in {selected_finding.repository}. "
+                        f"Missing: {', '.join(selected_finding.missing_fields)}."
+                    )
+                history = _agent_messages()
+                if len(history) > 1:
+                    ctx_parts.append(
+                        "Recent chat:\n"
+                        + "\n".join(
+                            f"{m['role'].upper()}: {m['content'][:300]}"
+                            for m in history[-5:-1]
+                        )
+                    )
+                return general_chat(prompt, "\n\n".join(ctx_parts), _llm_settings())
+            except Exception as exc:
+                replies.append(f"AI error: {exc}")
+        else:
+            replies.append(
+                summarize_findings(
+                    len(rows_for_summary), len(filtered_for_summary), stats_for_summary
+                )
             )
-        )
-        replies.append(
-            "Try: `only PRs and run scan`, `include closed issues and rerun`, or `set estimate 20`."
-        )
+            replies.append(
+                "Configure an LLM (sidebar → 🧠 AI Assistant) to ask anything. "
+                "Or try: `set estimate 5`, `include closed issues and run scan`."
+            )
 
     return "\n\n".join(replies)
 

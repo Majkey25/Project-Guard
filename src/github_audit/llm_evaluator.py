@@ -47,6 +47,18 @@ Parse a natural language search query into structured filter criteria for a GitH
 Only use values from the available options provided. Return empty lists if nothing matches.
 """
 
+_CHAT_INSTRUCTIONS = """
+You are an AI assistant embedded in Project Guard, a GitHub project audit tool.
+You help users understand scan results, interpret findings, and decide on next actions.
+Be concise (2-4 sentences unless depth is needed), practical, and reference specific numbers from context.
+You can suggest chat commands: `explain` (understand a finding), `set estimate 5` (write to GitHub),
+`run scan` (refresh), `only PRs and run scan`, `include closed issues and run scan`.
+"""
+
+
+class _ChatReply(BaseModel):
+    reply: str
+
 
 def _make_agent[LLMOutputT: BaseModel](
     settings: Settings,
@@ -122,6 +134,11 @@ def nl_to_filters(
     return agent.run_sync(
         build_nl_prompt(query, available_repos, available_assignees, available_fields)
     ).output
+
+
+def general_chat(prompt: str, context: str, settings: Settings) -> str:
+    agent = _make_agent(settings, _ChatReply, _CHAT_INSTRUCTIONS)
+    return agent.run_sync(f"{context}\n\nUser: {prompt}").output.reply
 
 
 # ── prompt builders ───────────────────────────────────────────────────────────

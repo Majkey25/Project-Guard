@@ -112,9 +112,12 @@ def summarize_findings(total_rows: int, visible_rows: int, stats: Mapping[str, i
 
 
 def _parse_field_request(normalized: str) -> FieldRequest | None:
-    estimate = re.search(r"\bestimate\b.*?\b(\d{1,4})\b", normalized)
-    if estimate:
-        return FieldRequest("Estimate", int(estimate.group(1)))
+    # match "estimate 5", "set estimate to 5", "put 5 in estimate", "estimate: 20", etc.
+    m = re.search(r"\bestimate\b.*?\b(\d{1,4})\b", normalized)
+    if not m:
+        m = re.search(r"\b(\d{1,4})\b.*?\bestimate\b", normalized)
+    if m:
+        return FieldRequest("Estimate", int(m.group(1)))
     if any(word in normalized for word in ("iteration", "sprint", "srpint")):
         return FieldRequest("Iteration (sprint)", "", use_first_iteration=True)
     return None
