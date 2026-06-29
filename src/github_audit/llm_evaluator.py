@@ -49,10 +49,10 @@ Only use values from the available options provided. Return empty lists if nothi
 
 _CHAT_INSTRUCTIONS = """
 You are an AI assistant embedded in Project Guard, a GitHub project audit tool.
-You help users understand scan results, interpret findings, and decide on next actions.
-Be concise (2-4 sentences unless depth is needed), practical, and reference specific numbers from context.
-You can suggest chat commands: `explain` (understand a finding), `set estimate 5` (write to GitHub),
-`run scan` (refresh), `only PRs and run scan`, `include closed issues and run scan`.
+Answer questions about the scan data shown in context. Be direct and concise (1-3 sentences).
+Only reference what is visible in the scan results. Do NOT tell the user to go do things
+manually in GitHub — if something cannot be done from this tool, say so in one sentence and stop.
+Available in-tool commands: `explain`, `set estimate N`, `set iteration`, `run scan`.
 """
 
 

@@ -915,14 +915,13 @@ def _render_agent_assistant() -> None:
             st.caption(f"{len(all_rows)} findings — say `explain` for a batch summary.")
 
     if not _agent_messages():
-        _add_agent_message(
-            "assistant",
-            "**All findings** — say `explain` for a batch AI summary.\n\n"
-            "Select a specific finding to:\n"
-            "- `explain` — why it matters\n"
-            "- `set estimate 5` — write the value to GitHub (then confirm with `apply it`)\n"
-            "- `set iteration` — assign to the current sprint",
-        )
+        if selected_key:
+            st.info(
+                "Say `explain`, `set estimate 5`, or `set iteration`"
+                " — then confirm with `apply it`."
+            )
+        else:
+            st.info("Say `explain` for a batch summary, or pick a finding above to work on it.")
 
     for message in _agent_messages():
         with st.chat_message(message["role"]):
@@ -981,11 +980,6 @@ if not rows:
 
 # ── filters ───────────────────────────────────────────────────────────────────
 st.subheader("Filters")
-title_search = st.text_input(
-    "title_search",
-    placeholder="🔍 Search by title keyword…",
-    label_visibility="collapsed",
-)
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
 
 all_repos = sorted({row["repository"] for row in rows})
@@ -1020,7 +1014,7 @@ with fc4:
 with fc5:
     sel_proj_labels = st.multiselect("Project", all_proj_options)
 
-fd1, fd2, _fd3 = st.columns([1, 1, 3])
+fd1, fd2, _ = st.columns([1, 1, 3])
 with fd1:
     date_from = st.date_input("Updated from", value=None, key="filter_date_from")
 with fd2:
@@ -1030,8 +1024,6 @@ sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
 
 filtered: list[FindingRow] = []
 for row in rows:
-    if title_search and title_search.lower() not in row["title"].lower():
-        continue
     if sel_repos and row["repository"] not in sel_repos:
         continue
     if sel_missing and not any(f in row["missing_fields"] for f in sel_missing):
