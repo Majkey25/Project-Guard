@@ -9,7 +9,7 @@
 [![Tests](https://img.shields.io/badge/tests-pytest-blueviolet)](https://pytest.org/)
 [![CI](https://github.com/Majkey25/Project-Guard/actions/workflows/ci.yml/badge.svg)](https://github.com/Majkey25/Project-Guard/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/Majkey25/Project-Guard?label=release)](https://github.com/Majkey25/Project-Guard/releases)
-[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![License](https://img.shields.io/badge/license-PolyForm%20Strict%201.0.0-blue)](LICENSE)
 
 Local tool for checking GitHub Issues and Pull Requests against your GitHub Project V2 workflow.
 
@@ -209,4 +209,5 @@ uv run pytest
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+[PolyForm Strict License 1.0.0](LICENSE) — free for noncommercial use.
+Commercial use, redistribution, and selling are not permitted.

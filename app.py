@@ -977,7 +977,7 @@ if not rows:
 
 # ── filters ───────────────────────────────────────────────────────────────────
 st.subheader("Filters")
-fc1, fc2, fc3, fc4, fc5 = st.columns(5)
+fc1, fc2, fc3, fc4, fc5, fc6 = st.columns(6)
 
 all_repos = sorted({row["repository"] for row in rows})
 all_missing = sorted(
@@ -1000,6 +1000,14 @@ for row in rows:
         proj_labels[p] = f"{p} - {t}" if t else str(p)
 all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
 
+# date state must be read before popover renders so the button label reflects current selection
+date_from = st.session_state.get("filter_date_from")
+date_to = st.session_state.get("filter_date_to")
+_date_label_parts = [
+    d.strftime("%Y/%m/%d") for d in (date_from, date_to) if d is not None
+]
+_date_btn_label = " – ".join(_date_label_parts) if _date_label_parts else "📅"
+
 with fc1:
     sel_repos = st.multiselect("Repository", all_repos)
 with fc2:
@@ -1010,12 +1018,15 @@ with fc4:
     sel_types = st.multiselect("Type", all_types)
 with fc5:
     sel_proj_labels = st.multiselect("Project", all_proj_options)
-
-fd1, fd2, _ = st.columns([1, 1, 3])
-with fd1:
-    date_from = st.date_input("Updated from", value=None, key="filter_date_from")
-with fd2:
-    date_to = st.date_input("Updated to", value=None, key="filter_date_to")
+with fc6:
+    st.write("")
+    with st.popover(_date_btn_label, use_container_width=True, help="Filter by last updated date"):
+        date_from = st.date_input(
+            "Updated from", value=None, format="YYYY/MM/DD", key="filter_date_from"
+        )
+        date_to = st.date_input(
+            "Updated to", value=None, format="YYYY/MM/DD", key="filter_date_to"
+        )
 
 sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
 
