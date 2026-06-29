@@ -21,6 +21,14 @@ from github_audit.scanner import scan_all
 
 st.set_page_config(page_title="GitHub Audit", page_icon="🔍", layout="wide")
 
+st.html("""<style>
+[data-testid="stPopover"] > div[data-testid="stPopoverBody"] {
+    width: 600px !important;
+    max-height: 80vh !important;
+    overflow-y: auto !important;
+}
+</style>""")
+
 
 class FindingRow(TypedDict):
     project: int
@@ -227,28 +235,10 @@ with st.sidebar:
             placeholder="42\n123\nhttps://github.com/orgs/my-company/projects/5",
             help="Paste numbers or GitHub project URLs. Comma, semicolon, or newline separated.",
         )
-        st.caption("Inputs stay in this browser session; the app does not write `.env`.")
+        st.caption("Click **💾 Save settings** below to persist all values to `.env`.")
 
-    with st.expander("👥 Accounts", expanded=True):
-        assignees = st.text_area(
-            "Accounts to watch",
-            value=E.get("TARGET_ASSIGNEES", ""),
-            placeholder="alice\nbob\ncharlie",
-            help=(
-                "GitHub usernames, one per line or comma-separated. "
-                "The scanner searches for issues and PRs assigned to these users. "
-                "Leave empty if you only want to scan project board items."
-            ),
-        )
-        inc_unassigned = st.checkbox(
-            "Also search unassigned items",
-            value=_bool("INCLUDE_UNASSIGNED", "false"),
-            help=(
-                "In addition to items assigned to the accounts above, also search for issues "
-                "and PRs with no assignee at all. Useful to catch work that slipped through "
-                "without an owner."
-            ),
-        )
+    assignees = E.get("TARGET_ASSIGNEES", "")
+    inc_unassigned = _bool("INCLUDE_UNASSIGNED", "false")
 
     with st.expander("✅ Checks to flag", expanded=True):
         req_board = st.checkbox(
@@ -284,15 +274,7 @@ with st.sidebar:
             value=_bool("REQUIRE_ASSIGNEE", "true"),
             help="Flag issues and PRs that have no assignee at all.",
         )
-        require_target = st.checkbox(
-            "Items not assigned to accounts to watch",
-            value=_bool("REQUIRE_TARGET_ASSIGNEE", "true"),
-            disabled=not bool(assignees.strip()),
-            help=(
-                "Flag items whose assignees are not in the 'Accounts to watch' list. "
-                "Requires at least one configured account."
-            ),
-        )
+        require_target = _bool("REQUIRE_TARGET_ASSIGNEE", "true")
         require_dev = st.checkbox(
             "Missing development link",
             value=_bool("REQUIRE_DEVELOPMENT_LINK", "true"),
@@ -313,22 +295,26 @@ with st.sidebar:
     with st.expander("📂 Scan Scope", expanded=False):
         inc_issues = st.checkbox(
             "Issues",
+            value=_bool("INCLUDE_ISSUES", "true"),
             key="scan_include_issues",
             help="Include open GitHub Issues in the scan.",
         )
         inc_closed = st.checkbox(
             "Include closed issues",
+            value=_bool("INCLUDE_CLOSED_ISSUES", "false"),
             key="scan_include_closed_issues",
             disabled=not inc_issues,
             help="Also scan issues in the 'closed' state. By default only open issues are scanned.",
         )
         inc_prs = st.checkbox(
             "Pull Requests",
+            value=_bool("INCLUDE_PULL_REQUESTS", "true"),
             key="scan_include_pull_requests",
             help="Include open Pull Requests in the scan.",
         )
         inc_closed_prs = st.checkbox(
             "Include closed/merged PRs",
+            value=_bool("INCLUDE_CLOSED_PULL_REQUESTS", "false"),
             key="scan_include_closed_pull_requests",
             disabled=not inc_prs,
             help="Also scan PRs that are closed or merged. By default only open PRs are scanned.",
@@ -460,21 +446,6 @@ with st.sidebar:
         )
         if _ollama:
             st.info("Local mode: Ollama runs on this machine. No API key is required.")
-        if st.button("💾 Save LLM settings to .env", width="stretch"):
-            try:
-                llm_updates = {
-                    "LLM_PROVIDER": llm_provider,
-                    "LLM_MODEL_NAME": llm_model,
-                    "LLM_BASE_URL": llm_base_url,
-                    "LLM_API_VERSION": llm_api_version,
-                    "LLM_ENABLED": "true",
-                }
-                if not _ollama:
-                    llm_updates["LLM_API_KEY"] = llm_api_key
-                _write_env_keys(llm_updates)
-                st.success("Saved. Reload the page to apply.")
-            except (ValueError, OSError) as exc:
-                st.error(f"Could not save: {exc}")
         llm_ready = bool(llm_model.strip() and (llm_api_key.strip() or _ollama))
         if llm_ready:
             st.caption(f"✅ AI features enabled ({llm_provider})")
@@ -482,6 +453,40 @@ with st.sidebar:
             st.caption("Enter model name and API key when required to enable AI features.")
 
     st.divider()
+    if st.button("💾 Save settings to .env", width="stretch"):
+        try:
+            _env_save: dict[str, str] = {
+                "GITHUB_TOKEN": token,
+                "GITHUB_ORG": org,
+                "GITHUB_INCLUDE_ALL_PROJECTS": "true" if include_all_projects else "false",
+                "GITHUB_INCLUDE_CLOSED_PROJECTS": "true" if include_closed_projects else "false",
+                "GITHUB_PROJECT_NUMBERS": _project_numbers(project_numbers),
+                "REQUIRE_PROJECT_ITEM": "true" if req_board else "false",
+                "REQUIRED_PROJECT_FIELDS": _csv(required_fields) if require_fields else "",
+                "REQUIRE_ASSIGNEE": "true" if require_assignee else "false",
+                "REQUIRE_DEVELOPMENT_LINK": "true" if require_dev else "false",
+                "REQUIRE_LINKED_PR_OR_BRANCH": "true" if require_pr_branch else "false",
+                "INCLUDE_ISSUES": "true" if inc_issues else "false",
+                "INCLUDE_CLOSED_ISSUES": "true" if inc_closed else "false",
+                "INCLUDE_PULL_REQUESTS": "true" if inc_prs else "false",
+                "INCLUDE_CLOSED_PULL_REQUESTS": "true" if inc_closed_prs else "false",
+                "GITHUB_INCLUDE_ALL_REPOSITORIES": "true" if inc_all_repos else "false",
+                "GITHUB_REPOSITORY_ALLOWLIST": repo_allowlist,
+                "GITHUB_REPOSITORY_DENYLIST": repo_denylist,
+                "GITHUB_UPDATED_FROM": updated_from.isoformat() if updated_from else "",
+                "GITHUB_UPDATED_TO": updated_to.isoformat() if updated_to else "",
+                "LLM_PROVIDER": llm_provider,
+                "LLM_MODEL_NAME": llm_model,
+                "LLM_BASE_URL": llm_base_url,
+                "LLM_API_VERSION": llm_api_version,
+                "LLM_ENABLED": "true",
+            }
+            if not _ollama:
+                _env_save["LLM_API_KEY"] = llm_api_key
+            _write_env_keys(_env_save)
+            st.success("✅ Saved to .env — settings persist after restart.")
+        except (ValueError, OSError) as exc:
+            st.error(f"Could not save: {exc}")
     scan_btn = st.button("▶ Run Scan", type="primary", width="stretch")
     if st.session_state.scan_time:
         st.caption(f"Last scan: {st.session_state.scan_time}")
@@ -785,11 +790,20 @@ def _agent_reply(
                 replies.append(f"Impact: {explanation.impact}")
                 replies.append(f"Suggested fix: {explanation.suggested_fix}")
             except Exception as exc:
-                replies.append(f"LLM explanation failed: {exc}")
+                replies.append(
+                    f"AI call failed: {exc}\n\n"
+                    "Check your API key in **⚙️ Config → 🧠 AI Assistant** "
+                    "or add `LLM_API_KEY` to `.env`. "
+                    "For Ollama (local/free): set `LLM_PROVIDER=ollama` — no key needed."
+                )
         else:
             missing = ", ".join(selected_finding.missing_fields)
             replies.append(
-                f"{selected_finding.item_type} #{selected_finding.number} is missing: {missing}."
+                f"{selected_finding.item_type} #{selected_finding.number} "
+                f"is missing: {missing}.\n\n"
+                "To get AI explanations: add `LLM_API_KEY` + `LLM_MODEL_NAME` to `.env`, "
+                "or configure them in **⚙️ Config → 🧠 AI Assistant**. "
+                "For local/free: set `LLM_PROVIDER=ollama` — no key needed."
             )
 
     if not replies:
@@ -807,96 +821,89 @@ def _agent_reply(
     return "\n\n".join(replies)
 
 
-def _render_agent_assistant(
-    rows_for_summary: list[FindingRow],
-    filtered_for_summary: list[FindingRow],
-    stats_for_summary: ScanStats | None,
-) -> None:
-    st.subheader("AI Assistant")
-    st.caption(
-        "Local app agent. It can explain findings, change scan controls, and preview writes."
-    )
+def _render_agent_assistant() -> None:
+    st.markdown("**🧠 AI Assistant**")
 
+    all_rows = cast(list[FindingRow], st.session_state.rows or [])
     findings_store = cast(
         dict[tuple[str, str, int], AuditFinding],
         st.session_state.findings or {},
     )
+    stats = cast(ScanStats | None, st.session_state.stats)
+
     target_options = {
-        f"#{row['number']} {row['title'][:50]} ({row['repository']})": (
+        f"#{row['number']} {row['title'][:40]}": (
             row["repository"],
             row["item_type"],
             row["number"],
         )
-        for row in filtered_for_summary[:100]
+        for row in all_rows[:100]
     }
     selected_key: tuple[str, str, int] | None = None
     if target_options:
         selected_label = st.selectbox(
-            "Target finding",
+            "Finding",
             list(target_options),
             key="agent_target_finding",
+            label_visibility="collapsed",
         )
         selected_key = target_options[selected_label]
         selected = findings_store.get(selected_key)
-        if selected:
-            st.caption(f"Selected missing: {', '.join(selected.missing_fields)}")
+        if selected and selected.missing_fields:
+            st.caption(f"Missing: {', '.join(selected.missing_fields)}")
 
     if not _agent_messages():
         _add_agent_message(
             "assistant",
-            "Ask about the scan, tell me to change filters, or select a finding and ask "
-            "for a safe field update preview.",
+            "Ask about the scan or select a finding above and say `explain`.",
         )
 
     for message in _agent_messages():
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    prompt = st.chat_input(
-        "Ask the assistant...",
-        key="agent_chat_input",
-    )
-    if prompt:
-        _add_agent_message("user", prompt)
-        reply = _agent_reply(
-            prompt,
-            selected_key,
-            rows_for_summary,
-            filtered_for_summary,
-            stats_for_summary,
+    with st.form(key="agent_form", clear_on_submit=True):
+        prompt = st.text_input("Message", placeholder="Ask...", label_visibility="collapsed")
+        submitted = st.form_submit_button(
+            "Send", icon=":material/send:", use_container_width=True
         )
+
+    if submitted and prompt:
+        _add_agent_message("user", prompt)
+        reply = _agent_reply(prompt, selected_key, all_rows, all_rows, stats)
         _add_agent_message("assistant", reply)
         st.rerun()
 
 
 # ── main content ──────────────────────────────────────────────────────────────
-st.title("🔍 GitHub Audit")
+_h1, _h2 = st.columns([7, 1])
+with _h1:
+    st.title("🔍 GitHub Audit")
+with _h2:
+    st.write("")
+    with st.popover("AI", use_container_width=True, help="Open AI assistant"):
+        _render_agent_assistant()
 
 if st.session_state.error:
     st.error(st.session_state.error)
 
 if st.session_state.rows is None:
-    intro_col, agent_col = st.columns([2, 1], gap="large")
-    with intro_col:
-        st.info(
-            "Configure the settings in the sidebar, then click **▶ Run Scan** to audit "
-            "your GitHub Projects for missing fields and workflow gaps."
-        )
-        with st.expander("What does this tool check?"):
-            st.markdown("""
+    st.info(
+        "Configure settings in the sidebar, then click **▶ Run Scan** to audit "
+        "your GitHub Projects for missing fields and workflow gaps."
+    )
+    with st.expander("What does this tool check?"):
+        st.markdown("""
 - **Required fields** — Estimate, Priority, Iteration (sprint), Difficulty, Status (configurable)
-- **Assignees** — whether items are assigned, and to your chosen target users
+- **Assignees** — whether items are assigned and to your target users
 - **Development links** — whether issues have a linked PR or branch
-- **Project board membership** — optional check for items missing from the selected V2 board
+- **Project board membership** — optional check for items missing from the V2 board
         """)
-    with agent_col:
-        _render_agent_assistant([], [], None)
     st.stop()
 
 rows = cast(list[FindingRow], st.session_state.rows)
 stats = cast(ScanStats, st.session_state.stats)
 
-# ── summary metrics ───────────────────────────────────────────────────────────
 c1, c2, c3 = st.columns(3)
 c1.metric("Issues scanned", stats["issues"])
 c2.metric("PRs scanned", stats["prs"])
@@ -908,34 +915,32 @@ if not rows:
 
 # ── filters ───────────────────────────────────────────────────────────────────
 st.subheader("Filters")
-
 title_search = st.text_input(
-    "title_search", placeholder="🔍 Search by title keyword…", label_visibility="collapsed"
+    "title_search",
+    placeholder="🔍 Search by title keyword…",
+    label_visibility="collapsed",
 )
-
 fc1, fc2, fc3, fc4, fc5 = st.columns(5)
 
 all_repos = sorted({row["repository"] for row in rows})
 all_missing = sorted(
-    {field.strip() for row in rows for field in row["missing_fields"].split(",") if field.strip()}
+    {f.strip() for row in rows for f in row["missing_fields"].split(",") if f.strip()}
 )
 all_assignees = sorted(
     {
-        assignee.strip()
+        a.strip()
         for row in rows
-        for assignee in row["assignees"].split(",")
-        if assignee.strip() and assignee.strip() != "(none)"
+        for a in row["assignees"].split(",")
+        if a.strip() and a.strip() != "(none)"
     }
 )
 all_types = sorted({row["item_type"] for row in rows})
-
-# Project filter: "48 - Sprint Board" labels built from already-fetched data
 proj_labels: dict[int, str] = {}
 for row in rows:
     p = row["project"]
     if p and p not in proj_labels:
-        title = row["project_title"]
-        proj_labels[p] = f"{p} - {title}" if title else str(p)
+        t = row["project_title"]
+        proj_labels[p] = f"{p} - {t}" if t else str(p)
 all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
 
 with fc1:
@@ -949,18 +954,17 @@ with fc4:
 with fc5:
     sel_proj_labels = st.multiselect("Project", all_proj_options)
 
-sel_proj_nums = {p for p, label in proj_labels.items() if label in sel_proj_labels}
+sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
 
-# apply all filters
 filtered: list[FindingRow] = []
 for row in rows:
     if title_search and title_search.lower() not in row["title"].lower():
         continue
     if sel_repos and row["repository"] not in sel_repos:
         continue
-    if sel_missing and not any(field in row["missing_fields"] for field in sel_missing):
+    if sel_missing and not any(f in row["missing_fields"] for f in sel_missing):
         continue
-    if sel_assignees and not any(assignee in row["assignees"] for assignee in sel_assignees):
+    if sel_assignees and not any(a in row["assignees"] for a in sel_assignees):
         continue
     if sel_types and row["item_type"] not in sel_types:
         continue
@@ -971,23 +975,22 @@ for row in rows:
 st.caption(f"Showing **{len(filtered)}** of {len(rows)} findings")
 
 # ── results table ─────────────────────────────────────────────────────────────
-display_rows = [
-    {
-        "Project": row["project"],
-        "Repository": row["repository"],
-        "Type": row["item_type"],
-        "#": row["number"],
-        "Missing": row["missing_fields"],
-        "Updated": row["updated_at"],
-        "Title": row["title"],
-        "Assignees": row["assignees"],
-        "URL": row["url"],
-    }
-    for row in filtered
-]
 st.dataframe(
-    display_rows,
-    width="stretch",
+    [
+        {
+            "Project": row["project"],
+            "Repository": row["repository"],
+            "Type": row["item_type"],
+            "#": row["number"],
+            "Missing": row["missing_fields"],
+            "Updated": row["updated_at"],
+            "Title": row["title"],
+            "Assignees": row["assignees"],
+            "URL": row["url"],
+        }
+        for row in filtered
+    ],
+    use_container_width=True,
     hide_index=True,
     height=min(600, 100 + len(filtered) * 35),
     column_config={
@@ -1000,7 +1003,6 @@ st.dataframe(
     },
 )
 
-# ── download ──────────────────────────────────────────────────────────────────
 st.download_button(
     "⬇️ Download filtered CSV",
     _csv_bytes(filtered),
@@ -1008,25 +1010,20 @@ st.download_button(
     "text/csv",
 )
 
-_, agent_col = st.columns([2, 1], gap="large")
-with agent_col:
-    _render_agent_assistant(rows, filtered, stats)
-
-# ── missing field breakdown ───────────────────────────────────────────────────
-with st.expander("📊 Missing field breakdown (all findings)"):
+with st.expander("📊 Missing field breakdown"):
     field_counts: dict[str, int] = {}
     for row in rows:
-        for field in row["missing_fields"].split(","):
-            field = field.strip()
-            if field:
-                field_counts[field] = field_counts.get(field, 0) + 1
-    chart_rows = [
-        {"Field": field, "Count": count}
-        for field, count in sorted(field_counts.items(), key=lambda item: item[1])
-    ]
-    st.bar_chart(chart_rows, x="Field", y="Count", horizontal=True)
+        for _f in row["missing_fields"].split(","):
+            _f = _f.strip()
+            if _f:
+                field_counts[_f] = field_counts.get(_f, 0) + 1
+    st.bar_chart(
+        [{"Field": _f, "Count": c} for _f, c in sorted(field_counts.items(), key=lambda x: x[1])],
+        x="Field",
+        y="Count",
+        horizontal=True,
+    )
 
-# ── limitations ───────────────────────────────────────────────────────────────
 limitations = cast(list[str], st.session_state.limitations)
 if limitations:
     with st.expander(f"⚠️ {len(limitations)} scan limitation(s)"):
