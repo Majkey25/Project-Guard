@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
@@ -25,8 +24,7 @@ class ControlUpdate:
 @dataclass(frozen=True)
 class FieldRequest:
     field_name: str
-    value: str | int
-    use_first_iteration: bool = False
+    value: str | int | float | bool
 
 
 @dataclass(frozen=True)
@@ -35,7 +33,6 @@ class AgentCommand:
     run_scan: bool = False
     apply_pending: bool = False
     explain: bool = False
-    field_request: FieldRequest | None = None
 
 
 def parse_agent_command(text: str) -> AgentCommand:
@@ -58,13 +55,11 @@ def parse_agent_command(text: str) -> AgentCommand:
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_pull_requests", True))
 
-    field_request = _parse_field_request(normalized)
     return AgentCommand(
         control_updates=tuple(_dedupe_updates(updates)),
         run_scan=_wants_scan(normalized),
         apply_pending=_wants_apply(normalized),
         explain=_wants_explain(normalized),
-        field_request=field_request,
     )
 
 
@@ -72,6 +67,8 @@ def build_field_plan(
     finding: AuditFinding,
     fields: list[ProjectFieldDefinition],
     request: FieldRequest,
+    *,
+    replace_existing: bool = False,
 ) -> ApplyPlan:
     changes: list[ApplyChange] = []
     skipped: list[str] = []
@@ -81,11 +78,6 @@ def build_field_plan(
 
     field_name = _resolve_field_name(fields, request)
     value = request.value
-    if request.use_first_iteration:
-        value = _first_iteration_name(fields, field_name)
-        if value is None:
-            skipped.append(f"{finding.repository}#{finding.number}: no iteration values found")
-            return ApplyPlan(changes=changes, skipped=skipped)
 
     add_suggested_change(
         changes,
@@ -98,6 +90,7 @@ def build_field_plan(
         field_name,
         value,
         finding.current_project_fields,
+        replace_existing=replace_existing,
     )
     return ApplyPlan(changes=changes, skipped=skipped)
 
@@ -111,36 +104,12 @@ def summarize_findings(total_rows: int, visible_rows: int, stats: Mapping[str, i
     )
 
 
-def _parse_field_request(normalized: str) -> FieldRequest | None:
-    # match "estimate 5", "set estimate to 5", "put 5 in estimate", "estimate: 20", etc.
-    m = re.search(r"\bestimate\b.*?\b(\d{1,4})\b", normalized)
-    if not m:
-        m = re.search(r"\b(\d{1,4})\b.*?\bestimate\b", normalized)
-    if m:
-        return FieldRequest("Estimate", int(m.group(1)))
-    if any(word in normalized for word in ("iteration", "sprint", "srpint")):
-        return FieldRequest("Iteration (sprint)", "", use_first_iteration=True)
-    return None
-
-
 def _resolve_field_name(fields: list[ProjectFieldDefinition], request: FieldRequest) -> str:
     requested = request.field_name.casefold()
     for field in fields:
         if field.name.casefold() == requested:
             return field.name
-    if request.use_first_iteration:
-        for field in fields:
-            lowered = field.name.casefold()
-            if field.kind == "iteration" and ("iteration" in lowered or "sprint" in lowered):
-                return field.name
     return request.field_name
-
-
-def _first_iteration_name(fields: list[ProjectFieldDefinition], field_name: str) -> str | None:
-    for field in fields:
-        if field.name == field_name and field.kind == "iteration" and field.iterations:
-            return sorted(field.iterations)[0]
-    return None
 
 
 def _dedupe_updates(updates: list[ControlUpdate]) -> list[ControlUpdate]:

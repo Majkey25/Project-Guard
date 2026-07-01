@@ -11,12 +11,12 @@ from typing import TypedDict, cast
 import streamlit as st
 from pydantic import ValidationError
 
-from github_audit.agent_chat import build_field_plan, parse_agent_command, summarize_findings
-from github_audit.applier import apply_plan, describe_changes
+from github_audit.agent_chat import parse_agent_command, summarize_findings
+from github_audit.applier import add_comment, apply_plan, describe_changes
 from github_audit.config import Settings
 from github_audit.discovery import discover_all
 from github_audit.github_client import GitHubClient, GitHubError
-from github_audit.models import ApplyPlan, AuditFinding, ProjectFieldDefinition
+from github_audit.models import ApplyPlan, AuditFinding, IssueCommentPlan, ProjectFieldDefinition
 from github_audit.scanner import scan_all
 
 st.set_page_config(page_title="GitHub Audit", page_icon="🔍", layout="wide")
@@ -169,6 +169,7 @@ session_defaults: dict[str, object | None] = {
     "agent_pending_plan": None,
     "agent_pending_project_id": None,
     "agent_pending_fields": None,
+    "agent_pending_comment": None,
     "agent_pending_scan": False,
     "agent_pending_control_updates": None,
     "scan_include_issues": _bool("INCLUDE_ISSUES", "true"),
@@ -504,6 +505,7 @@ with st.sidebar:
             "agent_pending_plan",
             "agent_pending_project_id",
             "agent_pending_fields",
+            "agent_pending_comment",
         ):
             st.session_state[k] = None
         st.session_state.agent_pending_scan = False
@@ -610,6 +612,7 @@ def _run_scan() -> None:
     st.session_state.agent_pending_plan = None
     st.session_state.agent_pending_project_id = None
     st.session_state.agent_pending_fields = None
+    st.session_state.agent_pending_comment = None
 
 
 def _scan_request_error() -> str | None:
@@ -686,30 +689,62 @@ def _pending_apply_reply() -> str:
     plan = cast(ApplyPlan | None, st.session_state.agent_pending_plan)
     project_id = cast(str | None, st.session_state.agent_pending_project_id)
     fields = cast(list[ProjectFieldDefinition] | None, st.session_state.agent_pending_fields)
-    if plan is None or project_id is None or fields is None:
-        return "No pending write. Select a finding and say e.g. `set estimate 5`."
+    comment = cast(IssueCommentPlan | None, st.session_state.agent_pending_comment)
+    has_field_changes = plan is not None and bool(plan.changes)
+    if not has_field_changes and comment is None:
+        return "No pending write. Select a finding and ask for a Project field change or comment."
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
+    applied = 0
+    skipped: list[str] = []
+    field_write_done = False
     try:
         with GitHubClient(token) as client:
-            result = apply_plan(
-                client,
-                plan,
-                project_id,
-                fields,
-                dry_run=False,
-                allow_write=True,
+            if has_field_changes:
+                if project_id is None or fields is None or plan is None:
+                    return "Write blocked: project field metadata is missing."
+                result = apply_plan(
+                    client,
+                    plan,
+                    project_id,
+                    fields,
+                    dry_run=False,
+                    allow_write=True,
+                )
+                applied = len(result.applied)
+                skipped.extend(result.skipped)
+                field_write_done = True
+            if comment is not None:
+                add_comment(client, comment.subject_id, comment.body)
+    except (GitHubError, ValueError) as exc:
+        if field_write_done:
+            st.session_state.agent_pending_plan = None
+            st.session_state.agent_pending_project_id = None
+            st.session_state.agent_pending_fields = None
+            st.session_state.agent_pending_scan = True
+            return (
+                f"GitHub write failed after applying {applied} field change(s): {exc}. "
+                "Pending comment kept. Rerunning scan."
             )
-    except GitHubError as exc:
         return f"GitHub write failed: {exc}"
 
     st.session_state.agent_pending_plan = None
     st.session_state.agent_pending_project_id = None
     st.session_state.agent_pending_fields = None
-    st.session_state.agent_pending_scan = True
-    applied = len(result.applied)
-    skipped = "; ".join(result.skipped) if result.skipped else "none"
-    return f"Applied {applied} change(s). Skipped: {skipped}. Rerunning scan."
+    st.session_state.agent_pending_comment = None
+    if has_field_changes:
+        st.session_state.agent_pending_scan = True
+    skipped_text = "; ".join(skipped) if skipped else "none"
+    comment_text = " Added 1 comment." if comment is not None else ""
+    scan_text = " Rerunning scan." if has_field_changes else ""
+    return f"Applied {applied} field change(s).{comment_text} Skipped: {skipped_text}.{scan_text}"
+
+
+def _describe_comment_preview(comment: IssueCommentPlan) -> str:
+    body = comment.body.replace("\n", " ")
+    if len(body) > 100:
+        body = body[:97] + "..."
+    return f"dry-run: {comment.repository}#{comment.number} add comment={body!r}"
 
 
 def _agent_reply(
@@ -744,42 +779,6 @@ def _agent_reply(
         st.session_state.findings or {},
     )
     selected_finding = findings_store.get(selected_key) if selected_key else None
-
-    if command.field_request:
-        if selected_finding is None:
-            replies.append(
-                "Select a specific finding from the dropdown first, then say e.g. `set estimate 5`."
-            )
-        elif selected_finding.project_number is None:
-            replies.append("Cannot prepare write: selected finding has no project number.")
-        else:
-            project_ids = cast(
-                dict[int, str] | None,
-                st.session_state.project_ids_by_number,
-            )
-            fields_by_project = cast(
-                dict[int, list[ProjectFieldDefinition]] | None,
-                st.session_state.project_fields_by_number,
-            )
-            project_id = project_ids.get(selected_finding.project_number) if project_ids else None
-            fields = (
-                fields_by_project.get(selected_finding.project_number)
-                if fields_by_project
-                else None
-            )
-            if project_id is None or fields is None:
-                replies.append("Cannot prepare write: project field metadata is missing.")
-            else:
-                plan = build_field_plan(selected_finding, fields, command.field_request)
-                if plan.changes:
-                    st.session_state.agent_pending_plan = plan
-                    st.session_state.agent_pending_project_id = project_id
-                    st.session_state.agent_pending_fields = fields
-                    replies.append("Prepared write preview:")
-                    replies.extend(describe_changes(plan.changes))
-                    replies.append("Say `apply it` to write. Requires `AUTO_APPLY=true`.")
-                if plan.skipped:
-                    replies.extend(plan.skipped)
 
     if command.explain:
         if selected_finding is not None:
@@ -839,7 +838,7 @@ def _agent_reply(
     if not replies:
         if llm_ready:
             try:
-                from github_audit.llm_evaluator import general_chat
+                from github_audit.llm_evaluator import general_chat, project_agent_chat
 
                 ctx_parts = [
                     summarize_findings(
@@ -847,12 +846,47 @@ def _agent_reply(
                     )
                 ]
                 if selected_finding:
-                    ctx_parts.append(
-                        f"Selected finding: {selected_finding.item_type} "
-                        f"#{selected_finding.number} '{selected_finding.title}' "
-                        f"in {selected_finding.repository}. "
-                        f"Missing: {', '.join(selected_finding.missing_fields)}."
+                    project_ids = cast(
+                        dict[int, str] | None,
+                        st.session_state.project_ids_by_number,
                     )
+                    fields_by_project = cast(
+                        dict[int, list[ProjectFieldDefinition]] | None,
+                        st.session_state.project_fields_by_number,
+                    )
+                    project_id = (
+                        project_ids.get(selected_finding.project_number)
+                        if project_ids and selected_finding.project_number is not None
+                        else None
+                    )
+                    fields = (
+                        fields_by_project.get(selected_finding.project_number, [])
+                        if fields_by_project and selected_finding.project_number is not None
+                        else []
+                    )
+                    agent_result = project_agent_chat(
+                        prompt,
+                        "\n\n".join(ctx_parts),
+                        selected_finding,
+                        fields,
+                        project_id,
+                        _llm_settings(),
+                    )
+                    replies.append(agent_result.reply)
+                    preview: list[str] = []
+                    if agent_result.project_plan is not None and agent_result.fields is not None:
+                        st.session_state.agent_pending_plan = agent_result.project_plan
+                        st.session_state.agent_pending_project_id = agent_result.project_id
+                        st.session_state.agent_pending_fields = agent_result.fields
+                        preview.extend(describe_changes(agent_result.project_plan.changes))
+                    if agent_result.comment_plan is not None:
+                        st.session_state.agent_pending_comment = agent_result.comment_plan
+                        preview.append(_describe_comment_preview(agent_result.comment_plan))
+                    if preview:
+                        replies.append("Prepared write preview:")
+                        replies.extend(preview)
+                        replies.append("Say `apply it` to write.")
+                    return "\n\n".join(replies)
                 history = _agent_messages()
                 if len(history) > 1:
                     ctx_parts.append(
@@ -872,7 +906,7 @@ def _agent_reply(
             )
             replies.append(
                 "Configure an LLM (sidebar → 🧠 AI Assistant) to ask anything. "
-                "Or try: `set estimate 5`, `include closed issues and run scan`."
+                "Without LLM, only scan control commands are available."
             )
 
     return "\n\n".join(replies)
@@ -915,10 +949,7 @@ def _render_agent_assistant() -> None:
 
     if not _agent_messages():
         if selected_key:
-            st.info(
-                "Say `explain`, `set estimate 5`, or `set iteration`"
-                " — then confirm with `apply it`."
-            )
+            st.info("Ask for a Project field update or comment — then confirm with `apply it`.")
         else:
             st.info("Say `explain` for a batch summary, or pick a finding above to work on it.")
 

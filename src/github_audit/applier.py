@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+from datetime import date
+from math import isfinite
+
 from github_audit.config import Settings
 from github_audit.github_client import GitHubClient, JsonObject
 from github_audit.models import (
@@ -15,6 +18,14 @@ UPDATE_FIELD_MUTATION = """
 mutation UpdateProjectField($input: UpdateProjectV2ItemFieldValueInput!) {
   updateProjectV2ItemFieldValue(input: $input) {
     projectV2Item { id }
+  }
+}
+"""
+
+ADD_COMMENT_MUTATION = """
+mutation AddComment($input: AddCommentInput!) {
+  addComment(input: $input) {
+    commentEdge { node { id } }
   }
 }
 """
@@ -99,12 +110,14 @@ def add_suggested_change(
     project_item_id: str,
     fields_by_name: dict[str, ProjectFieldDefinition],
     field_name: str,
-    value: str | int | None,
+    value: str | int | float | bool | None,
     current_project_fields: dict[str, str],
+    *,
+    replace_existing: bool = False,
 ) -> None:
     if value in (None, ""):
         return
-    if field_name in current_project_fields:
+    if field_name in current_project_fields and not replace_existing:
         skipped.append(f"{repository}#{number}: {field_name} already set")
         return
     field = fields_by_name.get(field_name)
@@ -118,6 +131,9 @@ def add_suggested_change(
         return
     if field.kind == "iteration" and iteration_id is None:
         skipped.append(f"{repository}#{number}: iteration {value!r} not found")
+        return
+    value = normalize_field_value(field, value, repository, number, skipped)
+    if value is None:
         return
     if item_type not in {"issue", "pull_request"}:
         skipped.append(f"{repository}#{number}: unsupported item type")
@@ -164,7 +180,7 @@ def apply_plan(
                 "projectId": project_id,
                 "itemId": change.project_item_id,
                 "fieldId": field.id,
-                "value": build_update_value(change),
+                "value": build_update_value(change, field),
             }
         }
         client.graphql(
@@ -175,14 +191,81 @@ def apply_plan(
     return ApplyResult(dry_run=False, applied=applied, skipped=skipped)
 
 
-def build_update_value(change: ApplyChange) -> JsonObject:
+def build_update_value(
+    change: ApplyChange,
+    field: ProjectFieldDefinition | None = None,
+) -> JsonObject:
     if change.option_id:
         return {"singleSelectOptionId": change.option_id}
     if change.iteration_id:
         return {"iterationId": change.iteration_id}
+    if field is not None and field.data_type.upper() == "DATE":
+        return {"date": str(change.value)}
     if isinstance(change.value, int | float):
         return {"number": change.value}
     return {"text": str(change.value)}
+
+
+def add_comment(client: GitHubClient, subject_id: str, body: str) -> None:
+    body = body.strip()
+    if not body:
+        msg = "comment body is empty"
+        raise ValueError(msg)
+    client.graphql(ADD_COMMENT_MUTATION, {"input": {"subjectId": subject_id, "body": body}})
+
+
+def normalize_field_value(
+    field: ProjectFieldDefinition,
+    value: str | int | float | bool,
+    repository: str,
+    number: int,
+    skipped: list[str],
+) -> str | int | float | bool | None:
+    if field.kind != "field":
+        return value
+    data_type = field.data_type.upper()
+    if data_type == "NUMBER":
+        return _number_value(value, repository, number, field.name, skipped)
+    if data_type == "DATE":
+        if isinstance(value, str):
+            try:
+                date.fromisoformat(value)
+            except ValueError:
+                skipped.append(f"{repository}#{number}: {field.name} needs YYYY-MM-DD date")
+                return None
+            return value
+        skipped.append(f"{repository}#{number}: {field.name} needs YYYY-MM-DD date")
+        return None
+    if data_type == "TEXT":
+        return str(value)
+    skipped.append(f"{repository}#{number}: {field.name} type {field.data_type} is not writable")
+    return None
+
+
+def _number_value(
+    value: str | int | float | bool,
+    repository: str,
+    number: int,
+    field_name: str,
+    skipped: list[str],
+) -> int | float | None:
+    if isinstance(value, bool):
+        skipped.append(f"{repository}#{number}: {field_name} needs a number")
+        return None
+    if isinstance(value, int | float):
+        if isinstance(value, float) and not isfinite(value):
+            skipped.append(f"{repository}#{number}: {field_name} needs a finite number")
+            return None
+        return value
+    try:
+        parsed = float(value)
+    except ValueError:
+        skipped.append(f"{repository}#{number}: {field_name} needs a number")
+        return None
+    if not isfinite(parsed):
+        skipped.append(f"{repository}#{number}: {field_name} needs a finite number")
+        return None
+    return int(parsed) if parsed.is_integer() else parsed
 
 
 def describe_changes(changes: list[ApplyChange]) -> list[str]:

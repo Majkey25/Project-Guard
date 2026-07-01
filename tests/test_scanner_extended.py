@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from github_audit.cli import merge_audits
-from github_audit.models import AuditFinding, AuditResult, ProjectItem
+from github_audit.models import AuditFinding, AuditResult, GitHubComment, ProjectItem
 from github_audit.scanner import content_from_project_item
 
 
@@ -20,7 +20,10 @@ def _item(
         repository=repository,
         number=number,
         title="Title",
+        body="Body",
         url=url,
+        comments=[GitHubComment(author="alice", body="Comment")],
+        comments_total_count=1,
     )
 
 
@@ -38,6 +41,8 @@ def test_content_from_project_item_issue() -> None:
     assert isinstance(content, GitHubIssue)
     assert content.repository == "org/repo"
     assert content.number == 1
+    assert content.body == "Body"
+    assert content.comments[0].body == "Comment"
 
 
 def test_content_from_project_item_pull_request() -> None:

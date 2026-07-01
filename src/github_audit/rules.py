@@ -39,10 +39,14 @@ def evaluate_item(
         return None
     item_type = "issue" if isinstance(content, GitHubIssue) else "pull_request"
     return AuditFinding(
+        content_id=content.id,
         repository=content.repository,
         item_type=item_type,
         number=content.number,
         title=content.title,
+        body=content.body,
+        comments=content.comments,
+        comments_total_count=content.comments_total_count,
         url=content.url,
         assignees=content.assignees,
         updated_at=content.updated_at,

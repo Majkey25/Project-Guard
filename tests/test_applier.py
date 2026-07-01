@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 from github_audit.applier import (
+    add_comment,
+    add_suggested_change,
     apply_plan,
     build_apply_plan,
     build_update_value,
@@ -74,6 +76,12 @@ def _fields() -> list[ProjectFieldDefinition]:
             data_type="ITERATION",
             kind="iteration",
             iterations={"Sprint 1": "iter-1"},
+        ),
+        ProjectFieldDefinition(
+            id="f-start",
+            name="Start date",
+            data_type="DATE",
+            kind="field",
         ),
     ]
 
@@ -250,6 +258,53 @@ def test_build_update_value_text() -> None:
     assert build_update_value(_change(value="note text")) == {"text": "note text"}
 
 
+def test_build_update_value_date() -> None:
+    field = next(field for field in _fields() if field.name == "Start date")
+    assert build_update_value(_change(field_name="Start date", value="2026-07-01"), field) == {
+        "date": "2026-07-01"
+    }
+
+
+def test_add_suggested_change_replaces_existing_and_coerces_number() -> None:
+    changes: list[ApplyChange] = []
+    skipped: list[str] = []
+    add_suggested_change(
+        changes,
+        skipped,
+        "org/repo",
+        "issue",
+        1,
+        "item-1",
+        {field.name: field for field in _fields()},
+        "Estimate",
+        "8",
+        {"Estimate": "3"},
+        replace_existing=True,
+    )
+    assert not skipped
+    assert changes[0].value == 8
+
+
+def test_add_suggested_change_rejects_bad_date() -> None:
+    changes: list[ApplyChange] = []
+    skipped: list[str] = []
+    add_suggested_change(
+        changes,
+        skipped,
+        "org/repo",
+        "issue",
+        1,
+        "item-1",
+        {field.name: field for field in _fields()},
+        "Start date",
+        "tomorrow",
+        {},
+        replace_existing=True,
+    )
+    assert not changes
+    assert any("YYYY-MM-DD" in item for item in skipped)
+
+
 # ── describe_changes ─────────────────────────────────────────────────────────
 
 
@@ -292,3 +347,12 @@ def test_apply_plan_dry_run_true_even_if_allow_write() -> None:
     )
     assert result.dry_run is True
     assert result.applied == []
+
+
+def test_add_comment_sends_graphql_mutation() -> None:
+    from unittest.mock import MagicMock
+
+    client = MagicMock()
+    add_comment(client, "I_1", " hello ")  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"subjectId": "I_1", "body": "hello"}}

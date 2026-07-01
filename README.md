@@ -48,6 +48,14 @@ uv run streamlit run app.py
 
 Open the Streamlit page, fill in the sidebar, then click **💾 Save settings to .env** to persist everything locally. Settings survive restarts — no login, no cookies.
 
+For the HTTP API used by oklab-web:
+
+```sh
+uv run github-audit-api --host 127.0.0.1 --port 8010
+```
+
+Point the oklab-web project API URL at `http://127.0.0.1:8010/chat`. The endpoint accepts `POST /chat?stream=true` with `prompt` or `message`, streams `data: {"delta": ...}` chunks for general chat, sends a final JSON payload, then `data: [DONE]`. `GET /status` and `GET /context` are also available.
+
 ## Sidebar Settings
 
 | Section | Setting | What it does |

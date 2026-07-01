@@ -6,16 +6,20 @@ readme = "README.md"
 license = { file = "LICENSE" }
 requires-python = ">=3.12"
 dependencies = [
+    "fastapi>=0.138.2",
     "httpx",
     "playwright>=1.60.0",
     "pydantic",
     "pydantic-ai",
     "pydantic-settings",
+    "sse-starlette>=3,<4",
     "streamlit>=1.58.0",
+    "uvicorn>=0.49.0",
 ]
 
 [project.scripts]
 github-audit = "github_audit.cli:main"
+github-audit-api = "github_audit.api.main:main"
 
 [dependency-groups]
 dev = [

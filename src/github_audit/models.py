@@ -30,6 +30,19 @@ class ProjectFieldValue(BaseModel):
     iteration_id: str | None = None
 
 
+class GitHubComment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    author: str | None = None
+    body: str
+    url: str | None = None
+    updated_at: str | None = None
+
+
+def _empty_comments() -> list[GitHubComment]:
+    return []
+
+
 class ProjectItem(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -39,9 +52,12 @@ class ProjectItem(BaseModel):
     repository: str | None
     number: int | None
     title: str
+    body: str = ""
     url: str | None
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    comments: list[GitHubComment] = Field(default_factory=_empty_comments)
+    comments_total_count: int = 0
     milestone: str | None = None
     updated_at: str | None = None
     field_values: dict[str, ProjectFieldValue] = Field(default_factory=dict)
@@ -61,6 +77,8 @@ class GitHubIssue(BaseModel):
     body: str
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    comments: list[GitHubComment] = Field(default_factory=_empty_comments)
+    comments_total_count: int = 0
     milestone: str | None = None
     updated_at: str | None = None
     linked_pull_requests_count: int = 0
@@ -78,6 +96,8 @@ class GitHubPullRequest(BaseModel):
     body: str
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
+    comments: list[GitHubComment] = Field(default_factory=_empty_comments)
+    comments_total_count: int = 0
     milestone: str | None = None
     updated_at: str | None = None
     closing_issues_count: int = 0
@@ -164,10 +184,14 @@ class AuditFinding(BaseModel):
 
     project_number: int | None = None
     project_title: str | None = None
+    content_id: str | None = None
     repository: str
     item_type: ItemType
     number: int
     title: str
+    body: str = Field(default="", exclude=True)
+    comments: list[GitHubComment] = Field(default_factory=_empty_comments, exclude=True)
+    comments_total_count: int = Field(default=0, exclude=True)
     url: str
     assignees: list[str]
     updated_at: str | None = None
@@ -218,6 +242,16 @@ class ApplyResult(BaseModel):
     dry_run: bool
     applied: list[ApplyChange]
     skipped: list[str] = Field(default_factory=list)
+
+
+class IssueCommentPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    subject_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    body: str
 
 
 class BrowserProjectFinding(BaseModel):

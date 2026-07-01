@@ -9,6 +9,7 @@ from github_audit.project_fields import (
     fetch_project_items,
     fetch_project_numbers,
     fetch_repositories,
+    parse_content,
     probe_branch_links,
     search_items,
 )
@@ -45,6 +46,17 @@ def _issue_content(number: int = 1) -> dict[str, Any]:
         "repository": {"nameWithOwner": "org/repo"},
         "assignees": {"nodes": [{"login": "alice"}]},
         "labels": {"nodes": [{"name": "bug"}]},
+        "comments": {
+            "totalCount": 1,
+            "nodes": [
+                {
+                    "author": {"login": "bob"},
+                    "body": "Please size this.",
+                    "url": "https://github.com/org/repo/issues/1#issuecomment-1",
+                    "updatedAt": "2026-07-01T08:00:00Z",
+                }
+            ],
+        },
         "milestone": None,
         "closedByPullRequestsReferences": {"totalCount": 0},
     }
@@ -63,6 +75,7 @@ def _pr_content(number: int = 2) -> dict[str, Any]:
         "repository": {"nameWithOwner": "org/repo"},
         "assignees": {"nodes": []},
         "labels": {"nodes": []},
+        "comments": {"totalCount": 0, "nodes": []},
         "milestone": None,
         "closingIssuesReferences": {"totalCount": 1},
     }
@@ -105,6 +118,14 @@ def _iteration_field_def() -> dict[str, Any]:
 
 
 # ── fetch_project_fields ──────────────────────────────────────────────────────
+
+
+def test_parse_content_includes_recent_comments() -> None:
+    content = parse_content(_issue_content())
+    assert content is not None
+    assert content.comments_total_count == 1
+    assert content.comments[0].author == "bob"
+    assert content.comments[0].body == "Please size this."
 
 
 def test_fetch_project_fields_basic() -> None:

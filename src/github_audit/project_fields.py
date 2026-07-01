@@ -14,6 +14,7 @@ from github_audit.github_client import (
     required_str,
 )
 from github_audit.models import (
+    GitHubComment,
     GitHubContent,
     GitHubIssue,
     GitHubPullRequest,
@@ -100,6 +101,15 @@ fragment ContentParts on ProjectV2ItemContent {
     repository { nameWithOwner }
     assignees(first: 20) { nodes { login } }
     labels(first: 20) { nodes { name } }
+    comments(last: 20) {
+      totalCount
+      nodes {
+        author { login }
+        body
+        url
+        updatedAt
+      }
+    }
     milestone { title }
     closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
       totalCount
@@ -116,6 +126,15 @@ fragment ContentParts on ProjectV2ItemContent {
     repository { nameWithOwner }
     assignees(first: 20) { nodes { login } }
     labels(first: 20) { nodes { name } }
+    comments(last: 20) {
+      totalCount
+      nodes {
+        author { login }
+        body
+        url
+        updatedAt
+      }
+    }
     milestone { title }
     closingIssuesReferences(first: 10) {
       totalCount
@@ -248,6 +267,15 @@ query SearchItems($query: String!, $after: String) {
         repository { nameWithOwner }
         assignees(first: 20) { nodes { login } }
         labels(first: 20) { nodes { name } }
+        comments(last: 20) {
+          totalCount
+          nodes {
+            author { login }
+            body
+            url
+            updatedAt
+          }
+        }
         milestone { title }
         closedByPullRequestsReferences(first: 10, includeClosedPrs: true) {
           totalCount
@@ -264,6 +292,15 @@ query SearchItems($query: String!, $after: String) {
         repository { nameWithOwner }
         assignees(first: 20) { nodes { login } }
         labels(first: 20) { nodes { name } }
+        comments(last: 20) {
+          totalCount
+          nodes {
+            author { login }
+            body
+            url
+            updatedAt
+          }
+        }
         milestone { title }
         closingIssuesReferences(first: 10) {
           totalCount
@@ -556,9 +593,12 @@ def parse_project_item(raw: JsonObject) -> ProjectItem:
         repository=parsed_content.repository,
         number=parsed_content.number,
         title=parsed_content.title,
+        body=parsed_content.body,
         url=parsed_content.url,
         assignees=parsed_content.assignees,
         labels=parsed_content.labels,
+        comments=parsed_content.comments,
+        comments_total_count=parsed_content.comments_total_count,
         milestone=parsed_content.milestone,
         updated_at=parsed_content.updated_at,
         field_values=field_values,
@@ -589,6 +629,8 @@ def parse_content(raw: JsonObject) -> GitHubContent | None:
             body=optional_str(raw.get("body")) or "",
             assignees=parse_named_nodes(raw, "assignees", "login"),
             labels=parse_named_nodes(raw, "labels", "name"),
+            comments=parse_comments(raw),
+            comments_total_count=parse_comments_total_count(raw),
             milestone=parse_milestone(raw),
             linked_pull_requests_count=parse_total_count(raw, "closedByPullRequestsReferences"),
         )
@@ -604,6 +646,8 @@ def parse_content(raw: JsonObject) -> GitHubContent | None:
             body=optional_str(raw.get("body")) or "",
             assignees=parse_named_nodes(raw, "assignees", "login"),
             labels=parse_named_nodes(raw, "labels", "name"),
+            comments=parse_comments(raw),
+            comments_total_count=parse_comments_total_count(raw),
             milestone=parse_milestone(raw),
             closing_issues_count=parse_total_count(raw, "closingIssuesReferences"),
         )
@@ -655,6 +699,39 @@ def parse_named_nodes(raw: JsonObject, connection_name: str, key: str) -> list[s
         if name:
             names.append(name)
     return names
+
+
+def parse_comments(raw: JsonObject) -> list[GitHubComment]:
+    connection = raw.get("comments")
+    if connection is None:
+        return []
+    comments: list[GitHubComment] = []
+    for node in as_list(as_object(connection, "comments").get("nodes"), "comments.nodes"):
+        item = as_object(node, "comment")
+        author_raw = item.get("author")
+        author = (
+            optional_str(as_object(author_raw, "comment.author").get("login"))
+            if author_raw is not None
+            else None
+        )
+        body = optional_str(item.get("body"))
+        if body:
+            comments.append(
+                GitHubComment(
+                    author=author,
+                    body=body,
+                    url=optional_str(item.get("url")),
+                    updated_at=optional_str(item.get("updatedAt")),
+                )
+            )
+    return comments
+
+
+def parse_comments_total_count(raw: JsonObject) -> int:
+    connection = raw.get("comments")
+    if connection is None:
+        return 0
+    return required_int(as_object(connection, "comments").get("totalCount"), "comments.totalCount")
 
 
 def parse_milestone(raw: JsonObject) -> str | None:

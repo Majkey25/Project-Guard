@@ -24,7 +24,7 @@ def test_evaluate_item_detects_missing_project_fields() -> None:
         title="Issue",
         url="https://github.com/org/repo/issues/1",
         state="OPEN",
-        body="",
+        body="Full issue body",
         assignees=["alice"],
     )
     item = ProjectItem(
@@ -41,6 +41,9 @@ def test_evaluate_item_detects_missing_project_fields() -> None:
     finding = evaluate_item(issue, item, settings)
     assert finding is not None
     assert finding.missing_fields == ["Priority"]
+    assert finding.content_id == "issue-1"
+    assert finding.body == "Full issue body"
+    assert finding.comments == []
 
 
 def test_evaluate_item_detects_unassigned_issue() -> None:

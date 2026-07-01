@@ -5,13 +5,17 @@ from typing import Literal
 import pytest
 
 from github_audit.llm_evaluator import (
+    ProjectAgentDeps,
     build_explain_prompt,
     build_nl_prompt,
     build_prompt,
     build_severity_prompt,
     build_triage_prompt,
+    prepare_issue_comment,
+    prepare_project_field_update,
+    read_selected_item,
 )
-from github_audit.models import AuditFinding
+from github_audit.models import AuditFinding, GitHubComment, ProjectFieldDefinition
 
 ItemType = Literal["issue", "pull_request"]
 
@@ -27,15 +31,44 @@ def _finding(
     development_status: str = "linked_pull_requests=0",
 ) -> AuditFinding:
     return AuditFinding(
+        content_id="I_1",
         repository=repository,
         item_type=item_type,
         number=number,
         title=title,
+        body="Full body text",
+        comments=[
+            GitHubComment(
+                author="bob",
+                body="Needs sizing.",
+                url="https://github.com/OKsystem/repo/issues/1#issuecomment-1",
+                updated_at="2026-07-01T08:00:00Z",
+            )
+        ],
+        comments_total_count=1,
         url=url,
         assignees=assignees if assignees is not None else ["alice"],
         missing_fields=missing_fields if missing_fields is not None else ["Estimate", "Priority"],
         development_status=development_status,
+        project_item_id="PVTI_1",
     )
+
+
+def _fields() -> list[ProjectFieldDefinition]:
+    return [
+        ProjectFieldDefinition(
+            id="f-priority",
+            name="Priority",
+            data_type="SINGLE_SELECT",
+            kind="single_select",
+            options={"P1": "opt-p1", "P2": "opt-p2"},
+        )
+    ]
+
+
+class _Ctx:
+    def __init__(self, deps: ProjectAgentDeps) -> None:
+        self.deps = deps
 
 
 def test_pydantic_ai_import_paths_exist() -> None:
@@ -57,6 +90,31 @@ def test_build_prompt_contains_missing_fields() -> None:
     finding = _finding()
     prompt = build_prompt(finding)
     assert "Missing fields: Estimate, Priority" in prompt
+
+
+def test_read_selected_item_includes_body_and_field_options() -> None:
+    deps = ProjectAgentDeps(finding=_finding(), project_id="PVT_1", fields=_fields())
+    text = read_selected_item(_Ctx(deps))  # type: ignore[arg-type]
+    assert "Full body text" in text
+    assert "Needs sizing." in text
+    assert "Priority" in text
+    assert "P1" in text
+
+
+def test_prepare_project_field_update_queues_generic_field() -> None:
+    deps = ProjectAgentDeps(finding=_finding(), project_id="PVT_1", fields=_fields())
+    result = prepare_project_field_update(_Ctx(deps), "priority", "P1")  # type: ignore[arg-type]
+    assert "Queued" in result
+    assert deps.project_plan.changes[0].field_name == "Priority"
+    assert deps.project_plan.changes[0].option_id == "opt-p1"
+
+
+def test_prepare_issue_comment_queues_comment() -> None:
+    deps = ProjectAgentDeps(finding=_finding(), project_id="PVT_1", fields=_fields())
+    result = prepare_issue_comment(_Ctx(deps), " Looks good. ")  # type: ignore[arg-type]
+    assert "Queued" in result
+    assert deps.comment_plan is not None
+    assert deps.comment_plan.body == "Looks good."
 
 
 def test_build_prompt_contains_assignees() -> None:

@@ -46,9 +46,12 @@ def test_parse_controls_closed_issues_and_pr_only() -> None:
     }
 
 
-def test_parse_estimate_update() -> None:
+def test_parse_does_not_hardcode_field_updates() -> None:
     command = parse_agent_command("complete the estimate space with value 20")
-    assert command.field_request == FieldRequest("Estimate", 20)
+    assert not command.control_updates
+    assert command.run_scan is False
+    assert command.apply_pending is False
+    assert command.explain is False
 
 
 def test_build_estimate_plan() -> None:
@@ -59,15 +62,30 @@ def test_build_estimate_plan() -> None:
     assert plan.changes[0].value == 20
 
 
-def test_build_iteration_plan_uses_first_available_iteration() -> None:
+def test_build_iteration_plan_uses_named_iteration() -> None:
     plan = build_field_plan(
         _finding(),
         _fields(),
-        FieldRequest("Iteration (sprint)", "", use_first_iteration=True),
+        FieldRequest("Iteration (sprint)", "Sprint A"),
     )
     assert not plan.skipped
     assert len(plan.changes) == 1
     assert plan.changes[0].iteration_id == "iter-a"
+
+
+def test_build_field_plan_can_replace_existing_value() -> None:
+    finding = _finding()
+    finding.current_project_fields["Estimate"] = "3"
+    plan = build_field_plan(
+        finding,
+        _fields(),
+        FieldRequest("estimate", "8"),
+        replace_existing=True,
+    )
+    assert not plan.skipped
+    assert len(plan.changes) == 1
+    assert plan.changes[0].field_name == "Estimate"
+    assert plan.changes[0].value == 8
 
 
 def test_build_field_plan_skips_without_project_item() -> None:
