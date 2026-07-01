@@ -694,6 +694,8 @@ def _pending_apply_reply() -> str:
     has_field_changes = plan is not None and bool(plan.changes)
     if not has_field_changes and comment is None:
         return "No pending write. Select a finding and ask for a Project field change or comment."
+    if not _bool("AUTO_APPLY"):
+        return "Write blocked: AUTO_APPLY must be true."
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
     applied = 0
@@ -886,7 +888,7 @@ def _agent_reply(
                     if preview:
                         replies.append("Prepared write preview:")
                         replies.extend(preview)
-                        replies.append("Say `apply it` to write.")
+                        replies.append("Say `apply it` to write. Requires `AUTO_APPLY=true`.")
                     return "\n\n".join(replies)
                 from pydantic_ai.messages import ModelMessage
 
@@ -956,7 +958,10 @@ def _render_agent_assistant() -> None:
 
     if not _agent_messages():
         if selected_key:
-            st.info("Ask for a Project field update or comment — then confirm with `apply it`.")
+            st.info(
+                "Ask for a Project field update or comment — then confirm with `apply it`. "
+                "Requires `AUTO_APPLY=true`."
+            )
         else:
             st.info("Say `explain` for a batch summary, or pick a finding above to work on it.")
 

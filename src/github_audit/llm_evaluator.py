@@ -6,7 +6,7 @@ from collections import Counter
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING, TypeVar
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel
 from pydantic_ai import RunContext, UsageLimits
@@ -33,22 +33,30 @@ if TYPE_CHECKING:
     from pydantic_ai.models.openai import OpenAIChatModel
 
 _logger = logging.getLogger(__name__)
-_T = TypeVar("_T")
 
 _RETRY_MAX = 2
 _RETRY_DELAY_S = 1.5
 # Caps total LLM sub-calls in the project agent to prevent runaway loops.
 _PROJECT_AGENT_USAGE_LIMITS = UsageLimits(request_limit=12)
 
+
 def _is_retryable_llm_error(exc: BaseException) -> bool:
     msg = str(exc).lower()
     return any(
         k in msg
-        for k in ("rate limit", "429", "too many requests", "timeout", "timed out", "503", "service unavailable")
+        for k in (
+            "rate limit",
+            "429",
+            "too many requests",
+            "timeout",
+            "timed out",
+            "503",
+            "service unavailable",
+        )
     )
 
 
-def _run_agent_sync(fn: Callable[[], _T], label: str) -> _T:
+def _run_agent_sync[T](fn: Callable[[], T], label: str) -> T:
     """Run an agent call with logging and retry on transient errors."""
     for attempt in range(_RETRY_MAX + 1):
         _logger.debug("┌─ LLM %s attempt=%d", label, attempt + 1)
@@ -61,13 +69,16 @@ def _run_agent_sync(fn: Callable[[], _T], label: str) -> _T:
                 delay = _RETRY_DELAY_S * (2**attempt)
                 _logger.warning(
                     "LLM %s transient error (attempt %d), retry in %.1fs: %s",
-                    label, attempt + 1, delay, exc,
+                    label,
+                    attempt + 1,
+                    delay,
+                    exc,
                 )
                 time.sleep(delay)
             else:
                 _logger.error("LLM %s failed (attempt %d): %s", label, attempt + 1, exc)
                 raise
-    raise AssertionError("unreachable")  # noqa: EM101
+    raise AssertionError("unreachable")
 
 
 _SUGGEST_INSTRUCTIONS = """
