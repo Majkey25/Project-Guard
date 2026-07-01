@@ -155,7 +155,8 @@ class ProjectGuardChatService:
             return self._reply_with_finding(settings, snapshot, state, session_id, message, context)
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
-        return ChatResult(session_id, general_chat(message, snapshot.context, settings))
+        reply, _ = general_chat(message, snapshot.context, settings)
+        return ChatResult(session_id, reply)
 
     def stream(
         self,

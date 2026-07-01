@@ -166,6 +166,7 @@ session_defaults: dict[str, object | None] = {
     "project_ids_by_number": None,
     "project_fields_by_number": None,
     "agent_messages": [],
+    "chat_message_history": [],
     "agent_pending_plan": None,
     "agent_pending_project_id": None,
     "agent_pending_fields": None,
@@ -887,15 +888,21 @@ def _agent_reply(
                         replies.extend(preview)
                         replies.append("Say `apply it` to write.")
                     return "\n\n".join(replies)
-                history = _agent_messages()
-                if len(history) > 1:
-                    ctx_parts.append(
-                        "Recent chat:\n"
-                        + "\n".join(
-                            f"{m['role'].upper()}: {m['content'][:300]}" for m in history[-5:-1]
-                        )
-                    )
-                return general_chat(prompt, "\n\n".join(ctx_parts), _llm_settings())
+                from pydantic_ai.messages import ModelMessage
+
+                stored_history: list[ModelMessage] = cast(
+                    list[ModelMessage],
+                    st.session_state.get("chat_message_history") or [],
+                )
+                reply, new_msgs = general_chat(
+                    prompt,
+                    "\n\n".join(ctx_parts),
+                    _llm_settings(),
+                    message_history=stored_history,
+                )
+                # Keep last 20 messages to bound context size.
+                st.session_state.chat_message_history = (stored_history + new_msgs)[-20:]
+                return reply
             except Exception as exc:
                 replies.append(f"AI error: {exc}")
         else:

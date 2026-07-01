@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import logging
+import time
 from collections import Counter
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, TypeVar
 
 from pydantic import BaseModel
-from pydantic_ai import RunContext
+from pydantic_ai import RunContext, UsageLimits
 
 from github_audit.agent_chat import FieldRequest, build_field_plan
 from github_audit.applier import describe_changes
@@ -27,7 +29,46 @@ from github_audit.models import (
 
 if TYPE_CHECKING:
     from pydantic_ai import Agent
+    from pydantic_ai.messages import ModelMessage
     from pydantic_ai.models.openai import OpenAIChatModel
+
+_logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+_RETRY_MAX = 2
+_RETRY_DELAY_S = 1.5
+# Caps total LLM sub-calls in the project agent to prevent runaway loops.
+_PROJECT_AGENT_USAGE_LIMITS = UsageLimits(request_limit=12)
+
+def _is_retryable_llm_error(exc: BaseException) -> bool:
+    msg = str(exc).lower()
+    return any(
+        k in msg
+        for k in ("rate limit", "429", "too many requests", "timeout", "timed out", "503", "service unavailable")
+    )
+
+
+def _run_agent_sync(fn: Callable[[], _T], label: str) -> _T:
+    """Run an agent call with logging and retry on transient errors."""
+    for attempt in range(_RETRY_MAX + 1):
+        _logger.debug("┌─ LLM %s attempt=%d", label, attempt + 1)
+        try:
+            result = fn()
+            _logger.debug("└─ LLM %s ok", label)
+            return result
+        except Exception as exc:
+            if _is_retryable_llm_error(exc) and attempt < _RETRY_MAX:
+                delay = _RETRY_DELAY_S * (2**attempt)
+                _logger.warning(
+                    "LLM %s transient error (attempt %d), retry in %.1fs: %s",
+                    label, attempt + 1, delay, exc,
+                )
+                time.sleep(delay)
+            else:
+                _logger.error("LLM %s failed (attempt %d): %s", label, attempt + 1, exc)
+                raise
+    raise AssertionError("unreachable")  # noqa: EM101
+
 
 _SUGGEST_INSTRUCTIONS = """
 Suggest missing GitHub workflow metadata. Do not claim a field is present or missing.
@@ -148,22 +189,26 @@ def _make_model(settings: Settings) -> OpenAIChatModel:
 
 def suggest_for_finding(finding: AuditFinding, settings: Settings) -> LLMSuggestion:
     agent = _make_agent(settings, LLMSuggestion, _SUGGEST_INSTRUCTIONS)
-    return agent.run_sync(build_prompt(finding)).output
+    prompt = build_prompt(finding)
+    return _run_agent_sync(lambda: agent.run_sync(prompt).output, "suggest")
 
 
 def batch_triage(findings: list[AuditFinding], settings: Settings) -> BatchTriageResult:
     agent = _make_agent(settings, BatchTriageResult, _TRIAGE_INSTRUCTIONS)
-    return agent.run_sync(build_triage_prompt(findings)).output
+    prompt = build_triage_prompt(findings)
+    return _run_agent_sync(lambda: agent.run_sync(prompt).output, "triage")
 
 
 def score_severities(findings: list[AuditFinding], settings: Settings) -> list[SeverityScore]:
     agent = _make_agent(settings, SeverityScoreList, _SEVERITY_INSTRUCTIONS)
-    return agent.run_sync(build_severity_prompt(findings)).output.scores
+    prompt = build_severity_prompt(findings)
+    return _run_agent_sync(lambda: agent.run_sync(prompt).output.scores, "severity")
 
 
 def explain_finding(finding: AuditFinding, rule: str, settings: Settings) -> RuleExplanation:
     agent = _make_agent(settings, RuleExplanation, _EXPLAIN_INSTRUCTIONS)
-    return agent.run_sync(build_explain_prompt(finding, rule)).output
+    prompt = build_explain_prompt(finding, rule)
+    return _run_agent_sync(lambda: agent.run_sync(prompt).output, "explain")
 
 
 def nl_to_filters(
@@ -174,23 +219,43 @@ def nl_to_filters(
     settings: Settings,
 ) -> NLFilterResult:
     agent = _make_agent(settings, NLFilterResult, _NL_FILTER_INSTRUCTIONS)
-    return agent.run_sync(
-        build_nl_prompt(query, available_repos, available_assignees, available_fields)
-    ).output
+    prompt = build_nl_prompt(query, available_repos, available_assignees, available_fields)
+    return _run_agent_sync(lambda: agent.run_sync(prompt).output, "nl_filter")
 
 
-def general_chat(prompt: str, context: str, settings: Settings) -> str:
+def general_chat(
+    prompt: str,
+    context: str,
+    settings: Settings,
+    *,
+    message_history: list[ModelMessage] | None = None,
+) -> tuple[str, list[ModelMessage]]:
+    """Return (reply, new_messages) for multi-turn conversation support."""
     agent = _make_agent(settings, _ChatReply, _CHAT_INSTRUCTIONS)
-    return agent.run_sync(f"{context}\n\nUser: {prompt}").output.reply
+    full_prompt = f"{context}\n\nUser: {prompt}"
+    result = _run_agent_sync(
+        lambda: agent.run_sync(full_prompt, message_history=message_history or []),
+        "chat",
+    )
+    return result.output.reply, list(result.new_messages())
 
 
-def general_chat_stream(prompt: str, context: str, settings: Settings) -> Iterator[str]:
+def general_chat_stream(
+    prompt: str,
+    context: str,
+    settings: Settings,
+    *,
+    message_history: list[ModelMessage] | None = None,
+) -> Iterator[str]:
     settings.validate_llm()
     from pydantic_ai import Agent
 
     agent = Agent(_make_model(settings), instructions=_CHAT_INSTRUCTIONS)
-    result = agent.run_stream_sync(f"{context}\n\nUser: {prompt}")
+    full_prompt = f"{context}\n\nUser: {prompt}"
+    _logger.debug("┌─ LLM chat_stream")
+    result = agent.run_stream_sync(full_prompt, message_history=message_history or [])
     yield from result.stream_text(delta=True, debounce_by=None)
+    _logger.debug("└─ LLM chat_stream ok")
 
 
 def project_agent_chat(
@@ -203,7 +268,20 @@ def project_agent_chat(
 ) -> ProjectAgentResult:
     agent = _make_project_agent(settings)
     deps = ProjectAgentDeps(finding=finding, project_id=project_id, fields=fields)
-    result = agent.run_sync(f"{context}\n\nUser: {prompt}", deps=deps)
+    full_prompt = f"{context}\n\nUser: {prompt}"
+    result = _run_agent_sync(
+        lambda: agent.run_sync(
+            full_prompt,
+            deps=deps,
+            usage_limits=_PROJECT_AGENT_USAGE_LIMITS,
+        ),
+        "project_agent",
+    )
+    _logger.debug(
+        "project_agent messages=%d usage=%s",
+        len(result.new_messages()),
+        result.usage,
+    )
     project_plan = deps.project_plan if deps.project_plan.changes else None
     return ProjectAgentResult(
         reply=result.output.reply,
