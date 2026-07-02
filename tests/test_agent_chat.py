@@ -54,6 +54,12 @@ def test_parse_does_not_hardcode_field_updates() -> None:
     assert command.explain is False
 
 
+def test_parse_apply_requires_exact_phrase() -> None:
+    assert parse_agent_command("apply it").apply_pending is True
+    assert parse_agent_command("do it").apply_pending is False
+    assert parse_agent_command("confirm").apply_pending is False
+
+
 def test_build_estimate_plan() -> None:
     plan = build_field_plan(_finding(), _fields(), FieldRequest("Estimate", 20))
     assert not plan.skipped

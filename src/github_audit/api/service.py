@@ -2,26 +2,39 @@ from __future__ import annotations
 
 from collections import Counter
 from collections.abc import Callable, Iterator
+from concurrent.futures import Future
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Lock
+from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from github_audit.agent_chat import parse_agent_command
-from github_audit.applier import add_comment, apply_plan, describe_changes
+from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
 from github_audit.config import Settings, load_settings
-from github_audit.discovery import discover_all
-from github_audit.github_client import GitHubClient
+from github_audit.discovery import discover_all, discover_repositories
+from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import general_chat, general_chat_stream, project_agent_chat
 from github_audit.models import (
     ApplyPlan,
     AuditFinding,
     AuditResult,
-    IssueCommentPlan,
+    PendingWrite,
     ProjectFieldDefinition,
+)
+from github_audit.project_fields import (
+    fetch_assignable_users,
+    fetch_repo_labels,
+    fetch_repo_milestones,
+    search_items,
 )
 from github_audit.report import audit_text
 from github_audit.scanner import scan_all
+
+if TYPE_CHECKING:
+    from pydantic_ai.messages import ModelMessage
+
+_MAX_HISTORY_MESSAGES = 20
 
 
 class ChatServiceError(RuntimeError):
@@ -40,6 +53,14 @@ def _empty_questions() -> list[str]:
     return []
 
 
+def _empty_pending_writes() -> list[PendingWrite]:
+    return []
+
+
+def _empty_message_history() -> list[ModelMessage]:
+    return []
+
+
 @dataclass(frozen=True)
 class ChatResult:
     conversation_id: str
@@ -49,10 +70,12 @@ class ChatResult:
 
 @dataclass
 class ConversationState:
-    pending_plan: ApplyPlan | None = None
+    pending_writes: list[PendingWrite] = field(default_factory=_empty_pending_writes)
     pending_project_id: str | None = None
     pending_fields: list[ProjectFieldDefinition] | None = None
-    pending_comment: IssueCommentPlan | None = None
+    # which selected item the queued writes belong to; used to detect a context switch
+    pending_content_id: str | None = None
+    message_history: list[ModelMessage] = field(default_factory=_empty_message_history)
     touched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
@@ -110,6 +133,7 @@ class ProjectGuardChatService:
         self._sessions = ConversationStore()
         self._snapshot: ProjectSnapshot | None = None
         self._snapshot_lock = Lock()
+        self._snapshot_refresh: Future[ProjectSnapshot] | None = None
 
     def status(self) -> dict[str, object]:
         try:
@@ -155,7 +179,10 @@ class ProjectGuardChatService:
             return self._reply_with_finding(settings, snapshot, state, session_id, message, context)
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
-        reply, _ = general_chat(message, snapshot.context, settings)
+        reply, new_messages = general_chat(
+            message, snapshot.context, settings, message_history=state.message_history
+        )
+        state.message_history = (state.message_history + new_messages)[-_MAX_HISTORY_MESSAGES:]
         return ChatResult(session_id, reply)
 
     def stream(
@@ -172,16 +199,21 @@ class ProjectGuardChatService:
         settings = load_settings()
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
-        session_id, _ = self._sessions.get(conversation_id)
+        session_id, state = self._sessions.get(conversation_id)
         snapshot = self._scan_snapshot(settings)
         chunks: list[str] = []
+        token_iter, get_new_messages = general_chat_stream(
+            message, snapshot.context, settings, message_history=state.message_history
+        )
 
         def tokens() -> Iterator[str]:
-            for chunk in general_chat_stream(message, snapshot.context, settings):
+            for chunk in token_iter:
                 chunks.append(chunk)
                 yield chunk
 
         def finalise() -> ChatResult:
+            new_messages = get_new_messages()
+            state.message_history = (state.message_history + new_messages)[-_MAX_HISTORY_MESSAGES:]
             return ChatResult(session_id, "".join(chunks))
 
         return tokens(), finalise
@@ -205,6 +237,23 @@ class ProjectGuardChatService:
             snapshot.project_ids.get(project_number) if project_number is not None else None
         )
         fields = snapshot.fields.get(project_number, []) if project_number is not None else []
+
+        discarded_notice = ""
+        if state.pending_writes and state.pending_content_id != finding.content_id:
+            discarded_notice = (
+                f"\n\n(Note: {len(state.pending_writes)} unapplied write(s) queued for a"
+                " different item were discarded because you switched items.)"
+            )
+            state.pending_writes = []
+            state.pending_project_id = None
+            state.pending_fields = None
+            state.pending_content_id = None
+
+        with GitHubClient(settings.github_token) as client:
+            labels = fetch_repo_labels(client, finding.repository)
+            milestones = fetch_repo_milestones(client, finding.repository)
+            assignable_users = fetch_assignable_users(client, finding.repository)
+
         result = project_agent_chat(
             message,
             snapshot.context,
@@ -212,17 +261,24 @@ class ProjectGuardChatService:
             fields,
             project_id,
             settings,
+            labels=labels,
+            milestones=milestones,
+            assignable_users=assignable_users,
+            existing_writes=state.pending_writes,
+            message_history=state.message_history,
         )
+        state.message_history = (state.message_history + result.new_messages)[
+            -_MAX_HISTORY_MESSAGES:
+        ]
         preview: list[str] = []
-        if result.project_plan is not None and result.fields is not None:
-            state.pending_plan = result.project_plan
+        if result.pending_writes:
+            state.pending_writes = result.pending_writes
             state.pending_project_id = result.project_id
             state.pending_fields = result.fields
-            preview.extend(describe_changes(result.project_plan.changes))
-        if result.comment_plan is not None:
-            state.pending_comment = result.comment_plan
-            preview.append(_comment_preview(result.comment_plan))
-        answer = result.reply
+            state.pending_content_id = finding.content_id
+            for write in result.pending_writes:
+                preview.extend(describe_pending_write(write))
+        answer = result.reply + discarded_notice
         if preview:
             answer = "\n\n".join(
                 [
@@ -235,50 +291,46 @@ class ProjectGuardChatService:
         return ChatResult(session_id, answer)
 
     def _apply_pending(self, settings: Settings, state: ConversationState) -> str:
-        has_fields = state.pending_plan is not None and bool(state.pending_plan.changes)
-        if not has_fields and state.pending_comment is None:
+        if not state.pending_writes:
             return "No pending write."
         if not settings.auto_apply:
             return "Write blocked: AUTO_APPLY must be true."
         applied = 0
-        skipped: list[str] = []
-        field_write_done = False
         with GitHubClient(settings.github_token) as client:
-            if has_fields:
-                if state.pending_project_id is None or state.pending_fields is None:
-                    raise ChatUnavailableError("pending project metadata is missing")
-                result = apply_plan(
-                    client,
-                    state.pending_plan or ApplyPlan(changes=[]),
-                    state.pending_project_id,
-                    state.pending_fields,
-                    dry_run=False,
-                    allow_write=True,
-                )
-                applied = len(result.applied)
-                skipped.extend(result.skipped)
-                field_write_done = True
-            if state.pending_comment is not None:
+            for index, write in enumerate(state.pending_writes):
                 try:
-                    add_comment(
+                    apply_pending_write(
                         client,
-                        state.pending_comment.subject_id,
-                        state.pending_comment.body,
+                        write,
+                        project_id=state.pending_project_id,
+                        fields=state.pending_fields,
                     )
-                except Exception:
-                    if field_write_done:
-                        state.pending_plan = None
-                        state.pending_project_id = None
-                        state.pending_fields = None
-                        self._clear_snapshot()
-                    raise
-        state.pending_plan = None
+                except PartialApplyError as exc:
+                    state.pending_writes = _trim_partial_apply(
+                        write, exc, state.pending_writes[index + 1 :]
+                    )
+                    self._clear_snapshot()
+                    return (
+                        f"Applied {applied} write(s) fully, then failed on write {index + 1}"
+                        f" after {len(exc.applied)} field change(s) went through: {exc}."
+                        f" {len(state.pending_writes)} write(s) remain queued -"
+                        " say `apply it` to retry."
+                    )
+                except GitHubError as exc:
+                    state.pending_writes = state.pending_writes[index:]
+                    self._clear_snapshot()
+                    return (
+                        f"Applied {applied} write(s), then failed on write {index + 1}: {exc}."
+                        f" {len(state.pending_writes)} write(s) remain queued -"
+                        " say `apply it` to retry."
+                    )
+                applied += 1
+        state.pending_writes = []
         state.pending_project_id = None
         state.pending_fields = None
-        state.pending_comment = None
+        state.pending_content_id = None
         self._clear_snapshot()
-        skipped_text = "; ".join(skipped) if skipped else "none"
-        return f"Applied {applied} field change(s). Skipped: {skipped_text}."
+        return f"Applied {applied} write(s)."
 
     def _scan_snapshot(self, settings: Settings) -> ProjectSnapshot:
         now = datetime.now(UTC)
@@ -287,22 +339,57 @@ class ProjectGuardChatService:
                 seconds=60
             ):
                 return self._snapshot
-            with GitHubClient(settings.github_token) as client:
-                discoveries = discover_all(client, settings)
-                audits = scan_all(client, settings, discoveries)
-            findings = {
-                _finding_key(finding): finding for audit in audits for finding in audit.findings
-            }
-            snapshot = ProjectSnapshot(
-                created_at=now,
-                audits=audits,
-                findings=findings,
-                project_ids={item.project_number: item.project_id for item in discoveries},
-                fields={item.project_number: item.fields for item in discoveries},
-                context=_scan_context(audits),
-            )
+            in_flight = self._snapshot_refresh
+            am_leader = in_flight is None
+            if am_leader:
+                in_flight = self._snapshot_refresh = Future()
+        if not am_leader:
+            # Someone else is already refreshing; wait on their result instead of
+            # starting a second full scan and instead of blocking everyone else's
+            # unrelated /chat and /context requests behind this thread's lock.
+            assert in_flight is not None
+            return in_flight.result()
+        try:
+            snapshot = self._run_scan(settings, now)
+        except BaseException as exc:
+            with self._snapshot_lock:
+                self._snapshot_refresh = None
+            in_flight.set_exception(exc)
+            raise
+        with self._snapshot_lock:
             self._snapshot = snapshot
-            return snapshot
+            self._snapshot_refresh = None
+        in_flight.set_result(snapshot)
+        return snapshot
+
+    def _run_scan(self, settings: Settings, now: datetime) -> ProjectSnapshot:
+        with GitHubClient(settings.github_token) as client:
+            repositories = discover_repositories(client, settings)
+            searched_items = search_items(
+                client,
+                repositories,
+                settings.target_assignees,
+                include_issues=settings.include_issues,
+                include_pull_requests=settings.include_pull_requests,
+                include_closed_issues=settings.include_closed_issues,
+                include_closed_pull_requests=settings.include_closed_pull_requests,
+                include_unassigned=settings.include_unassigned,
+            )
+            discoveries = discover_all(
+                client, settings, repositories=repositories, searched_items=searched_items
+            )
+            audits = scan_all(client, settings, discoveries, searched_items)
+        findings = {
+            _finding_key(finding): finding for audit in audits for finding in audit.findings
+        }
+        return ProjectSnapshot(
+            created_at=now,
+            audits=audits,
+            findings=findings,
+            project_ids={item.project_number: item.project_id for item in discoveries},
+            fields={item.project_number: item.fields for item in discoveries},
+            context=_scan_context(audits),
+        )
 
     def _clear_snapshot(self) -> None:
         with self._snapshot_lock:
@@ -333,11 +420,16 @@ def _finding_label(finding: AuditFinding) -> str:
     return f"{finding.repository} #{finding.number}: {missing}"
 
 
-def _comment_preview(comment: IssueCommentPlan) -> str:
-    body = comment.body.replace("\n", " ")
-    if len(body) > 100:
-        body = body[:97] + "..."
-    return f"dry-run: {comment.repository}#{comment.number} add comment={body!r}"
+def _trim_partial_apply(
+    write: PendingWrite, exc: PartialApplyError, rest: list[PendingWrite]
+) -> list[PendingWrite]:
+    """Rebuild the failed ApplyPlan write with only its unapplied changes, keeping later writes."""
+    assert isinstance(write, ApplyPlan)
+    remaining_changes = [change for change in write.changes if change not in exc.applied]
+    if not remaining_changes:
+        return rest
+    trimmed = ApplyPlan(changes=remaining_changes, skipped=exc.skipped)
+    return [trimmed, *rest]
 
 
 def _llm_ready(settings: Settings) -> bool:

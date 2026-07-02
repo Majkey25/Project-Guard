@@ -194,6 +194,8 @@ class AuditFinding(BaseModel):
     comments_total_count: int = Field(default=0, exclude=True)
     url: str
     assignees: list[str]
+    labels: list[str] = Field(default_factory=list)
+    milestone: str | None = None
     updated_at: str | None = None
     missing_fields: list[str]
     current_project_fields: dict[str, str] = Field(default_factory=dict)
@@ -232,6 +234,7 @@ class ApplyChange(BaseModel):
 class ApplyPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["project_field_update"] = "project_field_update"
     changes: list[ApplyChange]
     skipped: list[str] = Field(default_factory=list)
 
@@ -247,11 +250,105 @@ class ApplyResult(BaseModel):
 class IssueCommentPlan(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    kind: Literal["comment"] = "comment"
     subject_id: str
     repository: str
     item_type: ItemType
     number: int
     body: str
+
+
+class IssueEditPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["issue_edit"] = "issue_edit"
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    title: str | None = None
+    body: str | None = None
+
+
+class LabelUpdatePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["label_update"] = "label_update"
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    add_label_ids: dict[str, str] = Field(default_factory=dict)
+    remove_label_ids: dict[str, str] = Field(default_factory=dict)
+
+
+class AssigneeUpdatePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["assignee_update"] = "assignee_update"
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    add_user_ids: dict[str, str] = Field(default_factory=dict)
+    remove_user_ids: dict[str, str] = Field(default_factory=dict)
+
+
+class StateUpdatePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["state_update"] = "state_update"
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    action: Literal["close", "reopen"]
+    reason: Literal["COMPLETED", "NOT_PLANNED", "DUPLICATE"] | None = None
+
+
+class MilestoneUpdatePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["milestone_update"] = "milestone_update"
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    milestone_id: str | None = None
+    milestone_title: str | None = None
+
+
+class PullRequestMergePlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["pr_merge"] = "pr_merge"
+    content_id: str
+    repository: str
+    number: int
+    merge_method: Literal["MERGE", "SQUASH", "REBASE"]
+
+
+class ReviewerRequestPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["reviewer_request"] = "reviewer_request"
+    content_id: str
+    repository: str
+    number: int
+    user_ids: dict[str, str] = Field(default_factory=dict)
+
+
+PendingWrite = (
+    ApplyPlan
+    | IssueCommentPlan
+    | IssueEditPlan
+    | LabelUpdatePlan
+    | AssigneeUpdatePlan
+    | StateUpdatePlan
+    | MilestoneUpdatePlan
+    | PullRequestMergePlan
+    | ReviewerRequestPlan
+)
 
 
 class BrowserProjectFinding(BaseModel):

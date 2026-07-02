@@ -49,6 +49,8 @@ def evaluate_item(
         comments_total_count=content.comments_total_count,
         url=content.url,
         assignees=content.assignees,
+        labels=content.labels,
+        milestone=content.milestone,
         updated_at=content.updated_at,
         missing_fields=missing,
         current_project_fields=current_values,

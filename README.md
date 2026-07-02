@@ -97,6 +97,15 @@ Requires [Ollama](https://ollama.com) running locally (`ollama serve`). Data nev
 
 Configure in the sidebar and save, or set values in `.env` directly.
 
+### What the assistant can write
+
+When you select an issue or PR in the table, the assistant can queue: Project V2 field updates,
+new comments, title/body edits, label add/remove, assignee add/remove, close/reopen (with an
+optional reason for issues), setting or clearing the milestone, merging a pull request, and
+requesting PR reviewers. Every write is a **preview only** — nothing touches GitHub until you
+reply `apply it` and `AUTO_APPLY=true` is set. Not yet supported: creating new issues/PRs, editing
+or deleting existing comments, changing a PR's base branch, and draft/ready-for-review toggling.
+
 ## GitHub Token
 
 Create a classic GitHub personal access token.

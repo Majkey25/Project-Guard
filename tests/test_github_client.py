@@ -141,6 +141,43 @@ def test_graphql_503_exhausts_retries_and_raises(http: MagicMock) -> None:
         GitHubClient("tok").graphql("query {}")
 
 
+def test_graphql_403_without_rate_limit_signal_raises_immediately(http: MagicMock) -> None:
+    http.post.return_value = _resp(status=403, text="Forbidden")
+    with patch("time.sleep") as sleep, pytest.raises(GitHubError, match="403"):
+        GitHubClient("tok").graphql("query {}")
+    sleep.assert_not_called()
+    assert http.post.call_count == 1
+
+
+def test_graphql_403_with_retry_after_header_retries(http: MagicMock) -> None:
+    limited = _resp(status=403, text="secondary rate limit")
+    limited.headers = {"retry-after": "1"}
+    http.post.side_effect = [limited, _resp(body={"data": {"ok": True}})]
+    with patch("time.sleep") as sleep:
+        result = GitHubClient("tok").graphql("query {}")
+    assert result == {"ok": True}
+    assert http.post.call_count == 2
+    sleep.assert_called_once_with(1.0)
+
+
+def test_graphql_retries_rate_limited_graphql_error(http: MagicMock) -> None:
+    limited_body = _resp(body={"data": {}, "errors": [{"type": "RATE_LIMITED", "message": "x"}]})
+    http.post.side_effect = [limited_body, _resp(body={"data": {"ok": True}})]
+    with patch("time.sleep"):
+        result = GitHubClient("tok").graphql("query {}")
+    assert result == {"ok": True}
+    assert http.post.call_count == 2
+
+
+def test_graphql_honors_retry_after_header_on_429(http: MagicMock) -> None:
+    limited = _resp(status=429, text="rate limited")
+    limited.headers = {"retry-after": "3"}
+    http.post.side_effect = [limited, _resp(body={"data": {}})]
+    with patch("time.sleep") as sleep:
+        GitHubClient("tok").graphql("query {}")
+    sleep.assert_called_once_with(3.0)
+
+
 # ── context manager ───────────────────────────────────────────────────────────
 
 

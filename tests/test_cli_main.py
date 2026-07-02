@@ -120,6 +120,8 @@ def test_cli_scan_exits_zero() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(1)]),
     ):
@@ -134,6 +136,8 @@ def test_cli_scan_json_flag() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(0)]),
         patch("sys.stdout", buf),
@@ -149,6 +153,8 @@ def test_cli_scan_writes_markdown(tmp_path: Path) -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(1)]),
     ):
@@ -161,6 +167,8 @@ def test_cli_scan_writes_csv(tmp_path: Path) -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(2)]),
     ):
@@ -180,6 +188,8 @@ def test_cli_suggest_exits_zero() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(1)]),
         patch("github_audit.cli.suggest_for_finding", return_value=suggestion),
@@ -192,6 +202,8 @@ def test_cli_suggest_llm_error_returns_two() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(1)]),
         patch("github_audit.cli.suggest_for_finding", side_effect=ValueError("LLM_ENABLED=false")),
@@ -207,6 +219,8 @@ def test_cli_apply_dry_run_exits_zero() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(0)]),
         patch("github_audit.cli.suggest_for_finding", side_effect=ValueError("LLM_ENABLED=false")),
@@ -219,6 +233,8 @@ def test_cli_apply_multiple_projects_returns_two() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch(
             "github_audit.cli.discover_all",
             return_value=[_discovery(), _discovery()],
@@ -237,7 +253,7 @@ def test_cli_returns_two_on_github_error() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
-        patch("github_audit.cli.discover_all", side_effect=GitHubError("token invalid")),
+        patch("github_audit.cli.discover_repositories", side_effect=GitHubError("token invalid")),
     ):
         code = main(["scan"])
     assert code == 2
@@ -285,6 +301,8 @@ def test_cli_verbose_flag_accepted() -> None:
     with (
         patch("github_audit.cli.load_settings", return_value=_settings_mock()),
         patch("github_audit.cli.GitHubClient"),
+        patch("github_audit.cli.discover_repositories", return_value=["OKsystem/repo"]),
+        patch("github_audit.cli.search_items", return_value=[]),
         patch("github_audit.cli.discover_all", return_value=[_discovery()]),
         patch("github_audit.cli.scan_all", return_value=[_audit(0)]),
     ):

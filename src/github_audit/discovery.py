@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from github_audit.config import Settings
 from github_audit.github_client import GitHubClient, required_int, required_str
-from github_audit.models import DiscoveryResult, GitHubIssue, GitHubPullRequest
+from github_audit.models import DiscoveryResult, GitHubContent, GitHubIssue, GitHubPullRequest
 from github_audit.project_fields import (
     fetch_project_fields,
     fetch_project_items,
@@ -17,15 +17,26 @@ def discover(client: GitHubClient, settings: Settings) -> DiscoveryResult:
     return discover_all(client, settings)[0]
 
 
-def discover_all(client: GitHubClient, settings: Settings) -> list[DiscoveryResult]:
-    repositories = discover_repositories(client, settings)
-    samples = search_items(
-        client,
-        repositories,
-        settings.target_assignees,
-        include_issues=settings.include_issues,
-        include_pull_requests=settings.include_pull_requests,
-        include_closed_issues=settings.include_closed_issues,
+def discover_all(
+    client: GitHubClient,
+    settings: Settings,
+    *,
+    repositories: list[str] | None = None,
+    searched_items: list[GitHubContent] | None = None,
+) -> list[DiscoveryResult]:
+    if repositories is None:
+        repositories = discover_repositories(client, settings)
+    samples = (
+        searched_items
+        if searched_items is not None
+        else search_items(
+            client,
+            repositories,
+            settings.target_assignees,
+            include_issues=settings.include_issues,
+            include_pull_requests=settings.include_pull_requests,
+            include_closed_issues=settings.include_closed_issues,
+        )
     )
     issue_sample_count = sum(isinstance(item, GitHubIssue) for item in samples)
     pull_request_sample_count = sum(isinstance(item, GitHubPullRequest) for item in samples)

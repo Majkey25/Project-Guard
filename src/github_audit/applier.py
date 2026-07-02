@@ -4,14 +4,23 @@ from datetime import date
 from math import isfinite
 
 from github_audit.config import Settings
-from github_audit.github_client import GitHubClient, JsonObject
+from github_audit.github_client import GitHubClient, GitHubError, JsonObject
 from github_audit.models import (
     ApplyChange,
     ApplyPlan,
     ApplyResult,
+    AssigneeUpdatePlan,
     AuditResult,
+    IssueCommentPlan,
+    IssueEditPlan,
     ItemType,
+    LabelUpdatePlan,
+    MilestoneUpdatePlan,
+    PendingWrite,
     ProjectFieldDefinition,
+    PullRequestMergePlan,
+    ReviewerRequestPlan,
+    StateUpdatePlan,
 )
 
 UPDATE_FIELD_MUTATION = """
@@ -29,6 +38,90 @@ mutation AddComment($input: AddCommentInput!) {
   }
 }
 """
+
+UPDATE_ISSUE_MUTATION = """
+mutation UpdateIssue($input: UpdateIssueInput!) {
+  updateIssue(input: $input) { __typename }
+}
+"""
+
+UPDATE_PR_MUTATION = """
+mutation UpdatePullRequest($input: UpdatePullRequestInput!) {
+  updatePullRequest(input: $input) { __typename }
+}
+"""
+
+ADD_LABELS_MUTATION = """
+mutation AddLabels($input: AddLabelsToLabelableInput!) {
+  addLabelsToLabelable(input: $input) { __typename }
+}
+"""
+
+REMOVE_LABELS_MUTATION = """
+mutation RemoveLabels($input: RemoveLabelsFromLabelableInput!) {
+  removeLabelsFromLabelable(input: $input) { __typename }
+}
+"""
+
+ADD_ASSIGNEES_MUTATION = """
+mutation AddAssignees($input: AddAssigneesToAssignableInput!) {
+  addAssigneesToAssignable(input: $input) { __typename }
+}
+"""
+
+REMOVE_ASSIGNEES_MUTATION = """
+mutation RemoveAssignees($input: RemoveAssigneesFromAssignableInput!) {
+  removeAssigneesFromAssignable(input: $input) { __typename }
+}
+"""
+
+CLOSE_ISSUE_MUTATION = """
+mutation CloseIssue($input: CloseIssueInput!) {
+  closeIssue(input: $input) { __typename }
+}
+"""
+
+REOPEN_ISSUE_MUTATION = """
+mutation ReopenIssue($input: ReopenIssueInput!) {
+  reopenIssue(input: $input) { __typename }
+}
+"""
+
+CLOSE_PR_MUTATION = """
+mutation ClosePullRequest($input: ClosePullRequestInput!) {
+  closePullRequest(input: $input) { __typename }
+}
+"""
+
+REOPEN_PR_MUTATION = """
+mutation ReopenPullRequest($input: ReopenPullRequestInput!) {
+  reopenPullRequest(input: $input) { __typename }
+}
+"""
+
+MERGE_PR_MUTATION = """
+mutation MergePullRequest($input: MergePullRequestInput!) {
+  mergePullRequest(input: $input) { __typename }
+}
+"""
+
+REQUEST_REVIEWS_MUTATION = """
+mutation RequestReviews($input: RequestReviewsInput!) {
+  requestReviews(input: $input) { __typename }
+}
+"""
+
+
+class PartialApplyError(RuntimeError):
+    """apply_plan() failed partway through; carries the changes that already succeeded."""
+
+    def __init__(
+        self, applied: list[ApplyChange], skipped: list[str], cause: BaseException
+    ) -> None:
+        super().__init__(str(cause))
+        self.applied = applied
+        self.skipped = skipped
+        self.cause = cause
 
 
 def build_apply_plan(
@@ -183,10 +276,10 @@ def apply_plan(
                 "value": build_update_value(change, field),
             }
         }
-        client.graphql(
-            UPDATE_FIELD_MUTATION,
-            variables,
-        )
+        try:
+            client.graphql(UPDATE_FIELD_MUTATION, variables)
+        except GitHubError as exc:
+            raise PartialApplyError(applied, skipped, exc) from exc
         applied.append(change)
     return ApplyResult(dry_run=False, applied=applied, skipped=skipped)
 
@@ -273,3 +366,183 @@ def describe_changes(changes: list[ApplyChange]) -> list[str]:
         f"dry-run: {change.repository}#{change.number} set {change.field_name}={change.value}"
         for change in changes
     ]
+
+
+def apply_issue_edit(client: GitHubClient, plan: IssueEditPlan) -> None:
+    is_issue = plan.item_type == "issue"
+    input_obj: JsonObject = {"id" if is_issue else "pullRequestId": plan.content_id}
+    if plan.title is not None:
+        input_obj["title"] = plan.title
+    if plan.body is not None:
+        input_obj["body"] = plan.body
+    client.graphql(UPDATE_ISSUE_MUTATION if is_issue else UPDATE_PR_MUTATION, {"input": input_obj})
+
+
+def apply_label_update(client: GitHubClient, plan: LabelUpdatePlan) -> None:
+    if plan.add_label_ids:
+        client.graphql(
+            ADD_LABELS_MUTATION,
+            {
+                "input": {
+                    "labelableId": plan.content_id,
+                    "labelIds": list(plan.add_label_ids.values()),
+                }
+            },
+        )
+    if plan.remove_label_ids:
+        client.graphql(
+            REMOVE_LABELS_MUTATION,
+            {
+                "input": {
+                    "labelableId": plan.content_id,
+                    "labelIds": list(plan.remove_label_ids.values()),
+                }
+            },
+        )
+
+
+def apply_assignee_update(client: GitHubClient, plan: AssigneeUpdatePlan) -> None:
+    if plan.add_user_ids:
+        client.graphql(
+            ADD_ASSIGNEES_MUTATION,
+            {
+                "input": {
+                    "assignableId": plan.content_id,
+                    "assigneeIds": list(plan.add_user_ids.values()),
+                }
+            },
+        )
+    if plan.remove_user_ids:
+        client.graphql(
+            REMOVE_ASSIGNEES_MUTATION,
+            {
+                "input": {
+                    "assignableId": plan.content_id,
+                    "assigneeIds": list(plan.remove_user_ids.values()),
+                }
+            },
+        )
+
+
+def apply_state_update(client: GitHubClient, plan: StateUpdatePlan) -> None:
+    if plan.item_type == "issue":
+        if plan.action == "close":
+            input_obj: JsonObject = {"issueId": plan.content_id}
+            if plan.reason is not None:
+                input_obj["stateReason"] = plan.reason
+            client.graphql(CLOSE_ISSUE_MUTATION, {"input": input_obj})
+        else:
+            client.graphql(REOPEN_ISSUE_MUTATION, {"input": {"issueId": plan.content_id}})
+    elif plan.action == "close":
+        client.graphql(CLOSE_PR_MUTATION, {"input": {"pullRequestId": plan.content_id}})
+    else:
+        client.graphql(REOPEN_PR_MUTATION, {"input": {"pullRequestId": plan.content_id}})
+
+
+def apply_milestone_update(client: GitHubClient, plan: MilestoneUpdatePlan) -> None:
+    is_issue = plan.item_type == "issue"
+    key = "id" if is_issue else "pullRequestId"
+    # milestoneId is always sent explicitly (including null to clear) - GitHub's schema treats
+    # an omitted key as "leave unchanged" and an explicit null as "clear", so the two must not
+    # be conflated.
+    client.graphql(
+        UPDATE_ISSUE_MUTATION if is_issue else UPDATE_PR_MUTATION,
+        {"input": {key: plan.content_id, "milestoneId": plan.milestone_id}},
+    )
+
+
+def apply_pr_merge(client: GitHubClient, plan: PullRequestMergePlan) -> None:
+    client.graphql(
+        MERGE_PR_MUTATION,
+        {"input": {"pullRequestId": plan.content_id, "mergeMethod": plan.merge_method}},
+    )
+
+
+def apply_reviewer_request(client: GitHubClient, plan: ReviewerRequestPlan) -> None:
+    client.graphql(
+        REQUEST_REVIEWS_MUTATION,
+        {
+            "input": {
+                "pullRequestId": plan.content_id,
+                "userIds": list(plan.user_ids.values()),
+                "union": True,
+            }
+        },
+    )
+
+
+def apply_pending_write(
+    client: GitHubClient,
+    write: PendingWrite,
+    *,
+    project_id: str | None = None,
+    fields: list[ProjectFieldDefinition] | None = None,
+) -> None:
+    """Execute one queued write. Raises PartialApplyError or GitHubError on failure."""
+    if isinstance(write, ApplyPlan):
+        if project_id is None or fields is None:
+            msg = "project id and fields are required to apply a project field update"
+            raise ValueError(msg)
+        apply_plan(client, write, project_id, fields, dry_run=False, allow_write=True)
+    elif isinstance(write, IssueCommentPlan):
+        add_comment(client, write.subject_id, write.body)
+    elif isinstance(write, IssueEditPlan):
+        apply_issue_edit(client, write)
+    elif isinstance(write, LabelUpdatePlan):
+        apply_label_update(client, write)
+    elif isinstance(write, AssigneeUpdatePlan):
+        apply_assignee_update(client, write)
+    elif isinstance(write, StateUpdatePlan):
+        apply_state_update(client, write)
+    elif isinstance(write, MilestoneUpdatePlan):
+        apply_milestone_update(client, write)
+    elif isinstance(write, PullRequestMergePlan):
+        apply_pr_merge(client, write)
+    else:
+        apply_reviewer_request(client, write)
+
+
+def describe_pending_write(write: PendingWrite) -> list[str]:
+    if isinstance(write, ApplyPlan):
+        return describe_changes(write.changes)
+    if isinstance(write, IssueCommentPlan):
+        return [
+            f"dry-run: {write.repository}#{write.number} add comment",
+            f"  body -> {write.body!r}",
+        ]
+    if isinstance(write, IssueEditPlan):
+        lines = [f"dry-run: {write.repository}#{write.number} edit"]
+        if write.title is not None:
+            lines.append(f"  title -> {write.title!r}")
+        if write.body is not None:
+            lines.append(f"  body -> {write.body!r}")
+        if len(lines) == 1:
+            lines.append("  (no changes)")
+        return lines
+    if isinstance(write, LabelUpdatePlan):
+        parts: list[str] = []
+        if write.add_label_ids:
+            parts.append(f"add={sorted(write.add_label_ids)}")
+        if write.remove_label_ids:
+            parts.append(f"remove={sorted(write.remove_label_ids)}")
+        return [f"dry-run: {write.repository}#{write.number} labels {', '.join(parts)}"]
+    if isinstance(write, AssigneeUpdatePlan):
+        parts: list[str] = []
+        if write.add_user_ids:
+            parts.append(f"add={sorted(write.add_user_ids)}")
+        if write.remove_user_ids:
+            parts.append(f"remove={sorted(write.remove_user_ids)}")
+        return [f"dry-run: {write.repository}#{write.number} assignees {', '.join(parts)}"]
+    if isinstance(write, StateUpdatePlan):
+        reason = f" ({write.reason})" if write.reason else ""
+        return [f"dry-run: {write.repository}#{write.number} {write.action}{reason}"]
+    if isinstance(write, MilestoneUpdatePlan):
+        target = write.milestone_title or "(clear)"
+        return [f"dry-run: {write.repository}#{write.number} milestone -> {target}"]
+    if isinstance(write, PullRequestMergePlan):
+        return [
+            f"dry-run: {write.repository}#{write.number} merge via {write.merge_method}"
+            " (not easily reversible)"
+        ]
+    reviewers = sorted(write.user_ids)
+    return [f"dry-run: {write.repository}#{write.number} request review from {reviewers}"]

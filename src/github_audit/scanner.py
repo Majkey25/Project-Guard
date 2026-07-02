@@ -20,20 +20,24 @@ from github_audit.rules import evaluate_item
 
 
 def scan_all(
-    client: GitHubClient, settings: Settings, discoveries: list[DiscoveryResult]
+    client: GitHubClient,
+    settings: Settings,
+    discoveries: list[DiscoveryResult],
+    searched_items: list[GitHubContent] | None = None,
 ) -> list[AuditResult]:
     if not discoveries:
         return []
-    searched_items = search_items(
-        client,
-        discoveries[0].repositories,
-        settings.target_assignees,
-        include_issues=settings.include_issues,
-        include_pull_requests=settings.include_pull_requests,
-        include_closed_issues=settings.include_closed_issues,
-        include_closed_pull_requests=settings.include_closed_pull_requests,
-        include_unassigned=settings.include_unassigned,
-    )
+    if searched_items is None:
+        searched_items = search_items(
+            client,
+            discoveries[0].repositories,
+            settings.target_assignees,
+            include_issues=settings.include_issues,
+            include_pull_requests=settings.include_pull_requests,
+            include_closed_issues=settings.include_closed_issues,
+            include_closed_pull_requests=settings.include_closed_pull_requests,
+            include_unassigned=settings.include_unassigned,
+        )
     return [scan(client, settings, discovery, searched_items) for discovery in discoveries]
 
 

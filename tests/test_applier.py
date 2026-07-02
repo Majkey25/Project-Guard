@@ -1,21 +1,42 @@
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 from github_audit.applier import (
+    PartialApplyError,
     add_comment,
     add_suggested_change,
+    apply_assignee_update,
+    apply_issue_edit,
+    apply_label_update,
+    apply_milestone_update,
+    apply_pending_write,
     apply_plan,
+    apply_pr_merge,
+    apply_reviewer_request,
+    apply_state_update,
     build_apply_plan,
     build_update_value,
     describe_changes,
+    describe_pending_write,
 )
 from github_audit.config import Settings
+from github_audit.github_client import GitHubError
 from github_audit.models import (
     ApplyChange,
     ApplyPlan,
+    AssigneeUpdatePlan,
     AuditFinding,
     AuditResult,
+    IssueCommentPlan,
+    IssueEditPlan,
+    LabelUpdatePlan,
     LLMSuggestion,
+    MilestoneUpdatePlan,
     ProjectFieldDefinition,
+    PullRequestMergePlan,
+    ReviewerRequestPlan,
+    StateUpdatePlan,
 )
 
 
@@ -350,9 +371,236 @@ def test_apply_plan_dry_run_true_even_if_allow_write() -> None:
 
 
 def test_add_comment_sends_graphql_mutation() -> None:
-    from unittest.mock import MagicMock
-
     client = MagicMock()
     add_comment(client, "I_1", " hello ")  # type: ignore[arg-type]
     _, variables = client.graphql.call_args.args
     assert variables == {"input": {"subjectId": "I_1", "body": "hello"}}
+
+
+# ── apply_plan partial failure ──────────────────────────────────────────────
+
+
+def test_apply_plan_raises_partial_apply_error_and_keeps_already_applied() -> None:
+    client = MagicMock()
+    client.graphql.side_effect = [None, GitHubError("boom")]
+    plan = ApplyPlan(
+        changes=[_change(field_name="Estimate", value=3), _change(field_name="Priority")]
+    )
+    try:
+        apply_plan(
+            client, plan, project_id="proj-1", fields=_fields(), dry_run=False, allow_write=True
+        )
+    except PartialApplyError as exc:
+        assert len(exc.applied) == 1
+        assert exc.applied[0].field_name == "Estimate"
+    else:
+        raise AssertionError("expected PartialApplyError")
+
+
+# ── new mutation builders ────────────────────────────────────────────────────
+
+
+def test_apply_issue_edit_sends_update_issue_for_issue() -> None:
+    client = MagicMock()
+    plan = IssueEditPlan(
+        content_id="I_1", repository="org/repo", item_type="issue", number=1, title="New"
+    )
+    apply_issue_edit(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"id": "I_1", "title": "New"}}
+
+
+def test_apply_issue_edit_sends_update_pr_for_pr() -> None:
+    client = MagicMock()
+    plan = IssueEditPlan(
+        content_id="PR_1",
+        repository="org/repo",
+        item_type="pull_request",
+        number=1,
+        body="New body",
+    )
+    apply_issue_edit(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"pullRequestId": "PR_1", "body": "New body"}}
+
+
+def test_apply_label_update_sends_add_and_remove() -> None:
+    client = MagicMock()
+    plan = LabelUpdatePlan(
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        add_label_ids={"bug": "L_1"},
+        remove_label_ids={"docs": "L_2"},
+    )
+    apply_label_update(client, plan)  # type: ignore[arg-type]
+    assert client.graphql.call_count == 2
+    add_call, remove_call = client.graphql.call_args_list
+    assert add_call.args[1] == {"input": {"labelableId": "I_1", "labelIds": ["L_1"]}}
+    assert remove_call.args[1] == {"input": {"labelableId": "I_1", "labelIds": ["L_2"]}}
+
+
+def test_apply_assignee_update_sends_add_only_when_no_removals() -> None:
+    client = MagicMock()
+    plan = AssigneeUpdatePlan(
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        add_user_ids={"alice": "U_1"},
+    )
+    apply_assignee_update(client, plan)  # type: ignore[arg-type]
+    client.graphql.assert_called_once()
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"assignableId": "I_1", "assigneeIds": ["U_1"]}}
+
+
+def test_apply_state_update_close_issue_with_reason() -> None:
+    client = MagicMock()
+    plan = StateUpdatePlan(
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        action="close",
+        reason="COMPLETED",
+    )
+    apply_state_update(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"issueId": "I_1", "stateReason": "COMPLETED"}}
+
+
+def test_apply_state_update_reopen_pr_has_no_reason() -> None:
+    client = MagicMock()
+    plan = StateUpdatePlan(
+        content_id="PR_1",
+        repository="org/repo",
+        item_type="pull_request",
+        number=1,
+        action="reopen",
+    )
+    apply_state_update(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"pullRequestId": "PR_1"}}
+
+
+def test_apply_milestone_update_sends_explicit_null_to_clear() -> None:
+    client = MagicMock()
+    plan = MilestoneUpdatePlan(content_id="I_1", repository="org/repo", item_type="issue", number=1)
+    apply_milestone_update(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"id": "I_1", "milestoneId": None}}
+    assert "milestoneId" in variables["input"]  # explicit key, not omitted
+
+
+def test_apply_pr_merge_sends_merge_method() -> None:
+    client = MagicMock()
+    plan = PullRequestMergePlan(
+        content_id="PR_1", repository="org/repo", number=1, merge_method="SQUASH"
+    )
+    apply_pr_merge(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"pullRequestId": "PR_1", "mergeMethod": "SQUASH"}}
+
+
+def test_apply_reviewer_request_uses_union_true() -> None:
+    client = MagicMock()
+    plan = ReviewerRequestPlan(
+        content_id="PR_1", repository="org/repo", number=1, user_ids={"bob": "U_2"}
+    )
+    apply_reviewer_request(client, plan)  # type: ignore[arg-type]
+    _, variables = client.graphql.call_args.args
+    assert variables == {"input": {"pullRequestId": "PR_1", "userIds": ["U_2"], "union": True}}
+
+
+# ── apply_pending_write dispatch ─────────────────────────────────────────────
+
+
+def test_apply_pending_write_dispatches_project_field_update() -> None:
+    client = MagicMock()
+    plan = ApplyPlan(changes=[_change()])
+    apply_pending_write(client, plan, project_id="proj-1", fields=_fields())  # type: ignore[arg-type]
+    client.graphql.assert_called_once()
+
+
+def test_apply_pending_write_requires_project_context_for_field_update() -> None:
+    client = MagicMock()
+    plan = ApplyPlan(changes=[_change()])
+    try:
+        apply_pending_write(client, plan)  # type: ignore[arg-type]
+    except ValueError as exc:
+        assert "project id" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_apply_pending_write_dispatches_comment() -> None:
+    client = MagicMock()
+    plan = IssueCommentPlan(
+        subject_id="I_1", repository="org/repo", item_type="issue", number=1, body="hi"
+    )
+    apply_pending_write(client, plan)  # type: ignore[arg-type]
+    client.graphql.assert_called_once()
+
+
+# ── describe_pending_write ───────────────────────────────────────────────────
+
+
+def test_describe_pending_write_state_update_includes_reason() -> None:
+    plan = StateUpdatePlan(
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        action="close",
+        reason="DUPLICATE",
+    )
+    lines = describe_pending_write(plan)
+    assert len(lines) == 1
+    assert "org/repo#1" in lines[0]
+    assert "close" in lines[0]
+    assert "DUPLICATE" in lines[0]
+
+
+def test_describe_pending_write_comment_includes_exact_body() -> None:
+    plan = IssueCommentPlan(
+        subject_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        body="first line\nsecond line",
+    )
+    lines = describe_pending_write(plan)
+    assert lines == [
+        "dry-run: org/repo#1 add comment",
+        "  body -> 'first line\\nsecond line'",
+    ]
+
+
+def test_describe_pending_write_edit_includes_exact_body() -> None:
+    plan = IssueEditPlan(
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=1,
+        title="New title",
+        body="Full replacement body",
+    )
+    lines = describe_pending_write(plan)
+    assert "  title -> 'New title'" in lines
+    assert "  body -> 'Full replacement body'" in lines
+
+
+def test_describe_pending_write_merge_warns_not_reversible() -> None:
+    plan = PullRequestMergePlan(
+        content_id="PR_1", repository="org/repo", number=1, merge_method="MERGE"
+    )
+    lines = describe_pending_write(plan)
+    assert "not easily reversible" in lines[0]
+
+
+def test_describe_pending_write_milestone_clear() -> None:
+    plan = MilestoneUpdatePlan(content_id="I_1", repository="org/repo", item_type="issue", number=1)
+    lines = describe_pending_write(plan)
+    assert "(clear)" in lines[0]

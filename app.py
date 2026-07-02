@@ -12,11 +12,17 @@ import streamlit as st
 from pydantic import ValidationError
 
 from github_audit.agent_chat import parse_agent_command, summarize_findings
-from github_audit.applier import add_comment, apply_plan, describe_changes
+from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
 from github_audit.config import Settings
-from github_audit.discovery import discover_all
+from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
-from github_audit.models import ApplyPlan, AuditFinding, IssueCommentPlan, ProjectFieldDefinition
+from github_audit.models import ApplyPlan, AuditFinding, PendingWrite, ProjectFieldDefinition
+from github_audit.project_fields import (
+    fetch_assignable_users,
+    fetch_repo_labels,
+    fetch_repo_milestones,
+    search_items,
+)
 from github_audit.scanner import scan_all
 
 st.set_page_config(page_title="GitHub Audit", page_icon="🔍", layout="wide")
@@ -167,10 +173,10 @@ session_defaults: dict[str, object | None] = {
     "project_fields_by_number": None,
     "agent_messages": [],
     "chat_message_history": [],
-    "agent_pending_plan": None,
+    "agent_pending_writes": [],
     "agent_pending_project_id": None,
     "agent_pending_fields": None,
-    "agent_pending_comment": None,
+    "agent_pending_content_id": None,
     "agent_pending_scan": False,
     "agent_pending_control_updates": None,
     "scan_include_issues": _bool("INCLUDE_ISSUES", "true"),
@@ -503,12 +509,12 @@ with st.sidebar:
             "scan_time",
             "project_ids_by_number",
             "project_fields_by_number",
-            "agent_pending_plan",
             "agent_pending_project_id",
             "agent_pending_fields",
-            "agent_pending_comment",
+            "agent_pending_content_id",
         ):
             st.session_state[k] = None
+        st.session_state.agent_pending_writes = []
         st.session_state.agent_pending_scan = False
         st.session_state.agent_pending_control_updates = None
         st.session_state.limitations = list[str]()
@@ -558,8 +564,21 @@ def _run_scan() -> None:
 
     try:
         with GitHubClient(settings.github_token) as client:
-            discoveries = discover_all(client, settings)
-            results = scan_all(client, settings, discoveries)
+            repositories = discover_repositories(client, settings)
+            searched_items = search_items(
+                client,
+                repositories,
+                settings.target_assignees,
+                include_issues=settings.include_issues,
+                include_pull_requests=settings.include_pull_requests,
+                include_closed_issues=settings.include_closed_issues,
+                include_closed_pull_requests=settings.include_closed_pull_requests,
+                include_unassigned=settings.include_unassigned,
+            )
+            discoveries = discover_all(
+                client, settings, repositories=repositories, searched_items=searched_items
+            )
+            results = scan_all(client, settings, discoveries, searched_items)
     except GitHubError as exc:
         st.session_state.error = str(exc)
         return
@@ -610,10 +629,10 @@ def _run_scan() -> None:
     st.session_state.error = None
     st.session_state.stats = {"issues": issues, "prs": prs, "findings": len(rows)}
     st.session_state.limitations = limitations
-    st.session_state.agent_pending_plan = None
+    st.session_state.agent_pending_writes = []
     st.session_state.agent_pending_project_id = None
     st.session_state.agent_pending_fields = None
-    st.session_state.agent_pending_comment = None
+    st.session_state.agent_pending_content_id = None
 
 
 def _scan_request_error() -> str | None:
@@ -686,68 +705,55 @@ def _add_agent_message(role: str, content: str) -> None:
     st.session_state.agent_messages = messages[-30:]
 
 
+def _trim_partial_apply(
+    write: PendingWrite, exc: PartialApplyError, rest: list[PendingWrite]
+) -> list[PendingWrite]:
+    """Rebuild the failed ApplyPlan write with only its unapplied changes, keeping later writes."""
+    assert isinstance(write, ApplyPlan)
+    remaining_changes = [change for change in write.changes if change not in exc.applied]
+    if not remaining_changes:
+        return rest
+    trimmed = ApplyPlan(changes=remaining_changes, skipped=exc.skipped)
+    return [trimmed, *rest]
+
+
 def _pending_apply_reply() -> str:
-    plan = cast(ApplyPlan | None, st.session_state.agent_pending_plan)
+    pending_writes = cast(list[PendingWrite], st.session_state.agent_pending_writes or [])
     project_id = cast(str | None, st.session_state.agent_pending_project_id)
     fields = cast(list[ProjectFieldDefinition] | None, st.session_state.agent_pending_fields)
-    comment = cast(IssueCommentPlan | None, st.session_state.agent_pending_comment)
-    has_field_changes = plan is not None and bool(plan.changes)
-    if not has_field_changes and comment is None:
-        return "No pending write. Select a finding and ask for a Project field change or comment."
+    if not pending_writes:
+        return "No pending write. Select a finding and ask for a field change, comment, or edit."
     if not _bool("AUTO_APPLY"):
         return "Write blocked: AUTO_APPLY must be true."
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
     applied = 0
-    skipped: list[str] = []
-    field_write_done = False
-    try:
-        with GitHubClient(token) as client:
-            if has_field_changes:
-                if project_id is None or fields is None or plan is None:
-                    return "Write blocked: project field metadata is missing."
-                result = apply_plan(
-                    client,
-                    plan,
-                    project_id,
-                    fields,
-                    dry_run=False,
-                    allow_write=True,
+    with GitHubClient(token) as client:
+        for index, write in enumerate(pending_writes):
+            try:
+                apply_pending_write(client, write, project_id=project_id, fields=fields)
+            except PartialApplyError as exc:
+                remaining = _trim_partial_apply(write, exc, pending_writes[index + 1 :])
+                st.session_state.agent_pending_writes = remaining
+                return (
+                    f"Applied {applied} write(s) fully, then failed on write {index + 1}"
+                    f" after {len(exc.applied)} field change(s) went through: {exc}."
+                    f" {len(remaining)} write(s) remain queued - say `apply it` to retry."
                 )
-                applied = len(result.applied)
-                skipped.extend(result.skipped)
-                field_write_done = True
-            if comment is not None:
-                add_comment(client, comment.subject_id, comment.body)
-    except (GitHubError, ValueError) as exc:
-        if field_write_done:
-            st.session_state.agent_pending_plan = None
-            st.session_state.agent_pending_project_id = None
-            st.session_state.agent_pending_fields = None
-            st.session_state.agent_pending_scan = True
-            return (
-                f"GitHub write failed after applying {applied} field change(s): {exc}. "
-                "Pending comment kept. Rerunning scan."
-            )
-        return f"GitHub write failed: {exc}"
-
-    st.session_state.agent_pending_plan = None
+            except (GitHubError, ValueError) as exc:
+                remaining = pending_writes[index:]
+                st.session_state.agent_pending_writes = remaining
+                return (
+                    f"Applied {applied} write(s), then failed on write {index + 1}: {exc}."
+                    f" {len(remaining)} write(s) remain queued - say `apply it` to retry."
+                )
+            applied += 1
+    st.session_state.agent_pending_writes = []
     st.session_state.agent_pending_project_id = None
     st.session_state.agent_pending_fields = None
-    st.session_state.agent_pending_comment = None
-    if has_field_changes:
-        st.session_state.agent_pending_scan = True
-    skipped_text = "; ".join(skipped) if skipped else "none"
-    comment_text = " Added 1 comment." if comment is not None else ""
-    scan_text = " Rerunning scan." if has_field_changes else ""
-    return f"Applied {applied} field change(s).{comment_text} Skipped: {skipped_text}.{scan_text}"
-
-
-def _describe_comment_preview(comment: IssueCommentPlan) -> str:
-    body = comment.body.replace("\n", " ")
-    if len(body) > 100:
-        body = body[:97] + "..."
-    return f"dry-run: {comment.repository}#{comment.number} add comment={body!r}"
+    st.session_state.agent_pending_content_id = None
+    st.session_state.agent_pending_scan = True
+    return f"Applied {applied} write(s). Rerunning scan."
 
 
 def _agent_reply(
@@ -841,6 +847,8 @@ def _agent_reply(
     if not replies:
         if llm_ready:
             try:
+                from pydantic_ai.messages import ModelMessage
+
                 from github_audit.llm_evaluator import general_chat, project_agent_chat
 
                 ctx_parts = [
@@ -848,6 +856,10 @@ def _agent_reply(
                         len(rows_for_summary), len(filtered_for_summary), stats_for_summary
                     )
                 ]
+                stored_history: list[ModelMessage] = cast(
+                    list[ModelMessage],
+                    st.session_state.get("chat_message_history") or [],
+                )
                 if selected_finding:
                     project_ids = cast(
                         dict[int, str] | None,
@@ -867,6 +879,30 @@ def _agent_reply(
                         if fields_by_project and selected_finding.project_number is not None
                         else []
                     )
+
+                    discarded_notice = ""
+                    pending_writes = cast(
+                        list[PendingWrite], st.session_state.agent_pending_writes or []
+                    )
+                    pending_content_id = cast(str | None, st.session_state.agent_pending_content_id)
+                    if pending_writes and pending_content_id != selected_finding.content_id:
+                        discarded_notice = (
+                            f"\n\n(Note: {len(pending_writes)} unapplied write(s) queued for a"
+                            " different item were discarded because you switched items.)"
+                        )
+                        pending_writes = []
+                        st.session_state.agent_pending_writes = []
+                        st.session_state.agent_pending_project_id = None
+                        st.session_state.agent_pending_fields = None
+                        st.session_state.agent_pending_content_id = None
+
+                    with GitHubClient(token) as client:
+                        labels = fetch_repo_labels(client, selected_finding.repository)
+                        milestones = fetch_repo_milestones(client, selected_finding.repository)
+                        assignable_users = fetch_assignable_users(
+                            client, selected_finding.repository
+                        )
+
                     agent_result = project_agent_chat(
                         prompt,
                         "\n\n".join(ctx_parts),
@@ -874,28 +910,30 @@ def _agent_reply(
                         fields,
                         project_id,
                         _llm_settings(),
+                        labels=labels,
+                        milestones=milestones,
+                        assignable_users=assignable_users,
+                        existing_writes=pending_writes,
+                        message_history=stored_history,
                     )
-                    replies.append(agent_result.reply)
+                    st.session_state.chat_message_history = (
+                        stored_history + agent_result.new_messages
+                    )[-20:]
+                    replies.append(agent_result.reply + discarded_notice)
                     preview: list[str] = []
-                    if agent_result.project_plan is not None and agent_result.fields is not None:
-                        st.session_state.agent_pending_plan = agent_result.project_plan
+                    if agent_result.pending_writes:
+                        st.session_state.agent_pending_writes = agent_result.pending_writes
                         st.session_state.agent_pending_project_id = agent_result.project_id
                         st.session_state.agent_pending_fields = agent_result.fields
-                        preview.extend(describe_changes(agent_result.project_plan.changes))
-                    if agent_result.comment_plan is not None:
-                        st.session_state.agent_pending_comment = agent_result.comment_plan
-                        preview.append(_describe_comment_preview(agent_result.comment_plan))
+                        st.session_state.agent_pending_content_id = selected_finding.content_id
+                        for write in agent_result.pending_writes:
+                            preview.extend(describe_pending_write(write))
                     if preview:
                         replies.append("Prepared write preview:")
                         replies.extend(preview)
                         replies.append("Say `apply it` to write. Requires `AUTO_APPLY=true`.")
                     return "\n\n".join(replies)
-                from pydantic_ai.messages import ModelMessage
 
-                stored_history: list[ModelMessage] = cast(
-                    list[ModelMessage],
-                    st.session_state.get("chat_message_history") or [],
-                )
                 reply, new_msgs = general_chat(
                     prompt,
                     "\n\n".join(ctx_parts),

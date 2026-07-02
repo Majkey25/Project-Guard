@@ -11,9 +11,46 @@ type JsonObject = dict[str, JsonValue]
 
 GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
 
+# 403 is included because GitHub's secondary/abuse rate limit responds with it, but a bare 403
+# is usually a genuine auth/permission failure - _looks_rate_limited() disambiguates before retry.
+_RETRYABLE_STATUSES = {403, 429, 502, 503, 504}
+_MAX_ATTEMPTS = 5
+_MAX_BACKOFF_SECONDS = 120.0
+
 
 class GitHubError(RuntimeError):
     """GitHub request failed."""
+
+
+def _header_str(headers: httpx.Headers, name: str) -> str | None:
+    value = headers.get(name)
+    return value if isinstance(value, str) else None
+
+
+def _looks_rate_limited(response: httpx.Response) -> bool:
+    if _header_str(response.headers, "retry-after") is not None:
+        return True
+    return _header_str(response.headers, "x-ratelimit-remaining") == "0"
+
+
+def _retry_delay(response: httpx.Response, attempt: int) -> float:
+    retry_after = _header_str(response.headers, "retry-after")
+    if retry_after is not None:
+        try:
+            return max(0.0, float(retry_after))
+        except ValueError:
+            pass
+    reset_at = _header_str(response.headers, "x-ratelimit-reset")
+    if reset_at is not None:
+        try:
+            return max(0.0, float(reset_at) - time.time())
+        except ValueError:
+            pass
+    return float(2**attempt)
+
+
+def _is_rate_limited_graphql_error(errors: list[JsonValue]) -> bool:
+    return any(isinstance(error, dict) and error.get("type") == "RATE_LIMITED" for error in errors)
 
 
 class GitHubClient:
@@ -38,39 +75,41 @@ class GitHubClient:
 
     def graphql(self, query: str, variables: Mapping[str, JsonValue] | None = None) -> JsonObject:
         payload: JsonObject = {"query": query, "variables": dict(variables or {})}
-        response: httpx.Response | None = None
-        for attempt in range(3):
+        for attempt in range(_MAX_ATTEMPTS):
+            is_last = attempt == _MAX_ATTEMPTS - 1
             response = self._client.post(GITHUB_GRAPHQL_URL, json=payload)
-            if response.status_code in {429, 502, 503, 504} and attempt < 2:
-                time.sleep(2**attempt)
+            retryable = response.status_code in _RETRYABLE_STATUSES and not is_last
+            if retryable and (response.status_code != 403 or _looks_rate_limited(response)):
+                time.sleep(min(_retry_delay(response, attempt), _MAX_BACKOFF_SECONDS))
                 continue
-            break
-        if response is None:
-            msg = "GitHub GraphQL request was not sent"
-            raise GitHubError(msg)
-        if response.status_code >= 400:
-            msg = f"GitHub API returned HTTP {response.status_code}"
-            raise GitHubError(msg)
-        raw = response.json()
-        if not isinstance(raw, dict):
-            msg = "GitHub GraphQL returned non-object JSON"
-            raise GitHubError(msg)
-        data = cast(JsonObject, raw)
-        errors = data.get("errors")
-        if isinstance(errors, list) and errors:
-            messages: list[str] = []
-            for error in errors:
-                if isinstance(error, dict):
-                    message = error.get("message")
-                    if isinstance(message, str):
-                        messages.append(message)
-            msg = "GitHub GraphQL error: " + "; ".join(messages or ["unknown error"])
-            raise GitHubError(msg)
-        graph_data = data.get("data")
-        if not isinstance(graph_data, dict):
-            msg = "GitHub GraphQL response missing data"
-            raise GitHubError(msg)
-        return cast(JsonObject, graph_data)
+            if response.status_code >= 400:
+                msg = f"GitHub API returned HTTP {response.status_code}"
+                raise GitHubError(msg)
+            raw = response.json()
+            if not isinstance(raw, dict):
+                msg = "GitHub GraphQL returned non-object JSON"
+                raise GitHubError(msg)
+            data = cast(JsonObject, raw)
+            errors = data.get("errors")
+            if isinstance(errors, list) and errors:
+                if _is_rate_limited_graphql_error(errors) and not is_last:
+                    time.sleep(min(2**attempt, _MAX_BACKOFF_SECONDS))
+                    continue
+                messages: list[str] = []
+                for error in errors:
+                    if isinstance(error, dict):
+                        message = error.get("message")
+                        if isinstance(message, str):
+                            messages.append(message)
+                msg = "GitHub GraphQL error: " + "; ".join(messages or ["unknown error"])
+                raise GitHubError(msg)
+            graph_data = data.get("data")
+            if not isinstance(graph_data, dict):
+                msg = "GitHub GraphQL response missing data"
+                raise GitHubError(msg)
+            return cast(JsonObject, graph_data)
+        msg = "GitHub GraphQL request was not sent"
+        raise GitHubError(msg)
 
 
 def as_object(value: JsonValue, name: str) -> JsonObject:

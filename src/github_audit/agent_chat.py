@@ -124,7 +124,7 @@ def _wants_scan(normalized: str) -> bool:
 
 
 def _wants_apply(normalized: str) -> bool:
-    return normalized in {"apply", "apply it", "confirm", "confirm it", "write it", "do it"}
+    return normalized == "apply it"
 
 
 def _wants_explain(normalized: str) -> bool:

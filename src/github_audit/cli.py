@@ -13,6 +13,7 @@ from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import suggest_for_finding
 from github_audit.logging import configure_logging
 from github_audit.models import AuditResult
+from github_audit.project_fields import search_items
 from github_audit.report import (
     apply_text,
     audit_text,
@@ -98,11 +99,24 @@ def main(argv: list[str] | None = None) -> int:
                     )
                 print("\n\n".join(discovery_text(result) for result in results))
                 return 0
-            discoveries = discover_all(client, settings)
+            repositories = discover_repositories(client, settings)
+            searched_items = search_items(
+                client,
+                repositories,
+                settings.target_assignees,
+                include_issues=settings.include_issues,
+                include_pull_requests=settings.include_pull_requests,
+                include_closed_issues=settings.include_closed_issues,
+                include_closed_pull_requests=settings.include_closed_pull_requests,
+                include_unassigned=settings.include_unassigned,
+            )
+            discoveries = discover_all(
+                client, settings, repositories=repositories, searched_items=searched_items
+            )
             if args.command == "apply" and len(discoveries) != 1:
                 msg = "apply supports one project; set GITHUB_PROJECT_NUMBER to one project number"
                 raise ValueError(msg)
-            audits = scan_all(client, settings, discoveries)
+            audits = scan_all(client, settings, discoveries, searched_items)
             audit = merge_audits(audits)
             if args.command == "scan":
                 if args.markdown:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterable
+from concurrent.futures import ThreadPoolExecutor
 
 from github_audit.github_client import (
     GitHubClient,
@@ -326,6 +327,86 @@ query BranchLinkProbe($query: String!) {
 }
 """
 
+REPO_LABELS_QUERY = """
+query RepoLabels($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    labels(first: 100, after: $after) {
+      nodes { id name }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+REPO_MILESTONES_QUERY = """
+query RepoMilestones($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    milestones(first: 100, after: $after, states: [OPEN, CLOSED]) {
+      nodes { id title }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+REPO_ASSIGNABLE_USERS_QUERY = """
+query RepoAssignableUsers($owner: String!, $name: String!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    assignableUsers(first: 100, after: $after) {
+      nodes { id login }
+      pageInfo { hasNextPage endCursor }
+    }
+  }
+}
+"""
+
+
+def split_repository(repository: str) -> tuple[str, str]:
+    owner, _, name = repository.partition("/")
+    return owner, name
+
+
+def _fetch_repo_named_ids(
+    client: GitHubClient,
+    repository: str,
+    query: str,
+    connection_name: str,
+    *,
+    label_key: str = "name",
+) -> dict[str, str]:
+    owner, name = split_repository(repository)
+    results: dict[str, str] = {}
+    after: str | None = None
+    while True:
+        data = client.graphql(query, {"owner": owner, "name": name, "after": after})
+        repo = as_object(data.get("repository"), "repository")
+        connection = as_object(repo.get(connection_name), f"repository.{connection_name}")
+        results.update(parse_named_ids(connection.get("nodes"), label_key))
+        page_info = as_object(connection.get("pageInfo"), f"repository.{connection_name}.pageInfo")
+        if page_info.get("hasNextPage") is not True:
+            break
+        after = optional_str(page_info.get("endCursor"))
+    return results
+
+
+def fetch_repo_labels(client: GitHubClient, repository: str) -> dict[str, str]:
+    """Return {label name: label node id} for the given "owner/name" repository."""
+    return _fetch_repo_named_ids(client, repository, REPO_LABELS_QUERY, "labels")
+
+
+def fetch_repo_milestones(client: GitHubClient, repository: str) -> dict[str, str]:
+    """Return {milestone title: milestone node id}, open and closed."""
+    return _fetch_repo_named_ids(
+        client, repository, REPO_MILESTONES_QUERY, "milestones", label_key="title"
+    )
+
+
+def fetch_assignable_users(client: GitHubClient, repository: str) -> dict[str, str]:
+    """Return {login: user node id} for users assignable in the given repository."""
+    return _fetch_repo_named_ids(
+        client, repository, REPO_ASSIGNABLE_USERS_QUERY, "assignableUsers", label_key="login"
+    )
+
 
 def fetch_project_fields(
     client: GitHubClient, org: str, project_number: int
@@ -452,6 +533,9 @@ def fetch_remaining_field_values(
     return values
 
 
+_SEARCH_MAX_WORKERS = 8
+
+
 def search_items(
     client: GitHubClient,
     repositories: Iterable[str],
@@ -463,28 +547,30 @@ def search_items(
     include_closed_pull_requests: bool = False,
     include_unassigned: bool = False,
 ) -> list[GitHubContent]:
-    items_by_id: dict[str, GitHubContent] = {}
     issue_states = "" if include_closed_issues else " is:open"
     pr_states = "" if include_closed_pull_requests else " is:open"
+    queries: list[str] = []
     for repository in repositories:
         for assignee in assignees:
             if include_issues:
-                query = f"repo:{repository} is:issue assignee:{assignee}{issue_states}"
-                for item in run_search(client, query):
-                    items_by_id[item.id] = item
+                queries.append(f"repo:{repository} is:issue assignee:{assignee}{issue_states}")
             if include_pull_requests:
-                query = f"repo:{repository} is:pr assignee:{assignee}{pr_states}"
-                for item in run_search(client, query):
-                    items_by_id[item.id] = item
+                queries.append(f"repo:{repository} is:pr assignee:{assignee}{pr_states}")
         if include_unassigned:
             if include_issues:
-                query = f"repo:{repository} is:issue no:assignee{issue_states}"
-                for item in run_search(client, query):
-                    items_by_id[item.id] = item
+                queries.append(f"repo:{repository} is:issue no:assignee{issue_states}")
             if include_pull_requests:
-                query = f"repo:{repository} is:pr no:assignee{pr_states}"
-                for item in run_search(client, query):
-                    items_by_id[item.id] = item
+                queries.append(f"repo:{repository} is:pr no:assignee{pr_states}")
+    if not queries:
+        return []
+    items_by_id: dict[str, GitHubContent] = {}
+    with ThreadPoolExecutor(max_workers=min(_SEARCH_MAX_WORKERS, len(queries))) as pool:
+        # Submit-order iteration (not as_completed) keeps merge order deterministic
+        # even though the searches themselves run concurrently.
+        futures = [pool.submit(run_search, client, query) for query in queries]
+        for future in futures:
+            for item in future.result():
+                items_by_id[item.id] = item
     return list(items_by_id.values())
 
 

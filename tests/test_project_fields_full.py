@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+from threading import Lock
 from typing import Any
 
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.project_fields import (
     fetch_all_repositories,
+    fetch_assignable_users,
     fetch_project_fields,
     fetch_project_items,
     fetch_project_numbers,
+    fetch_repo_labels,
+    fetch_repo_milestones,
     fetch_repositories,
     parse_content,
     probe_branch_links,
     search_items,
+    split_repository,
 )
 
 
@@ -20,10 +25,12 @@ class FakeClient(GitHubClient):
 
     def __init__(self, *responses: Any) -> None:
         self._queue: list[Any] = list(responses)
+        self._lock = Lock()
 
     def graphql(self, query: str, variables: Any = None) -> Any:
         _ = query, variables
-        item = self._queue.pop(0)
+        with self._lock:
+            item = self._queue.pop(0)
         if isinstance(item, BaseException):
             raise item
         return item
@@ -406,8 +413,11 @@ def test_search_items_returns_issues_and_prs() -> None:
         include_pull_requests=True,
         include_closed_issues=False,
     )
+    # Issue and PR searches run concurrently, so list order isn't guaranteed - look up by id.
+    by_id = {item.id: item for item in results}
     assert len(results) == 2
-    assert results[0].updated_at == "2026-06-10T12:00:00Z"
+    assert by_id["I_1"].updated_at == "2026-06-10T12:00:00Z"
+    assert by_id["PR_2"].updated_at == "2026-06-11T12:00:00Z"
 
 
 def test_search_items_deduplicates_by_id() -> None:
@@ -471,3 +481,47 @@ def test_probe_branch_links_no_repos() -> None:
     available, detail = probe_branch_links(FakeClient(), [])  # type: ignore[arg-type]
     assert available is False
     assert "no repository" in detail
+
+
+# ── repo lookup queries ───────────────────────────────────────────────────────
+
+
+def test_split_repository() -> None:
+    assert split_repository("org/repo") == ("org", "repo")
+
+
+def test_fetch_repo_labels_returns_name_to_id_map() -> None:
+    fc = FakeClient(
+        {"repository": {"labels": _page([{"id": "L_1", "name": "bug"}])}},
+    )
+    result = fetch_repo_labels(fc, "org/repo")  # type: ignore[arg-type]
+    assert result == {"bug": "L_1"}
+
+
+def test_fetch_repo_labels_paginates() -> None:
+    fc = FakeClient(
+        {
+            "repository": {
+                "labels": _page([{"id": "L_1", "name": "bug"}], has_next=True, cursor="c1")
+            }
+        },
+        {"repository": {"labels": _page([{"id": "L_2", "name": "docs"}])}},
+    )
+    result = fetch_repo_labels(fc, "org/repo")  # type: ignore[arg-type]
+    assert result == {"bug": "L_1", "docs": "L_2"}
+
+
+def test_fetch_repo_milestones_returns_title_to_id_map() -> None:
+    fc = FakeClient(
+        {"repository": {"milestones": _page([{"id": "M_1", "title": "v1"}])}},
+    )
+    result = fetch_repo_milestones(fc, "org/repo")  # type: ignore[arg-type]
+    assert result == {"v1": "M_1"}
+
+
+def test_fetch_assignable_users_returns_login_to_id_map() -> None:
+    fc = FakeClient(
+        {"repository": {"assignableUsers": _page([{"id": "U_1", "login": "alice"}])}},
+    )
+    result = fetch_assignable_users(fc, "org/repo")  # type: ignore[arg-type]
+    assert result == {"alice": "U_1"}
