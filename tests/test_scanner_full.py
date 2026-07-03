@@ -33,13 +33,13 @@ def _settings(**overrides: object) -> Settings:
     return Settings.model_validate(base)
 
 
-def _discovery(repos: list[str] | None = None) -> DiscoveryResult:
+def _discovery(repos: list[str] | None = None, *, project_number: int = 1) -> DiscoveryResult:
     return DiscoveryResult(
         organization="OKsystem",
-        project_id="PVT_1",
-        project_number=1,
-        project_title="Project",
-        project_url="https://github.com/orgs/OKsystem/projects/1",
+        project_id=f"PVT_{project_number}",
+        project_number=project_number,
+        project_title=f"Project {project_number}",
+        project_url=f"https://github.com/orgs/OKsystem/projects/{project_number}",
         repositories=repos or ["OKsystem/repo"],
         fields=[
             ProjectFieldDefinition(id="f-est", name="Estimate", data_type="NUMBER", kind="field")
@@ -268,3 +268,60 @@ def test_scan_all_runs_once_per_discovery() -> None:
 
     assert len(results) == 2
     assert all(isinstance(r, AuditResult) for r in results)
+
+
+def test_scan_all_skips_project_item_noise_when_item_exists_on_another_project() -> None:
+    issue = _issue()
+    item = _project_item(has_estimate=True)
+    client = MagicMock()
+    discoveries = [_discovery(project_number=1), _discovery(project_number=2)]
+    with patch("github_audit.scanner.fetch_project_items", side_effect=[[], [item]]):
+        results = scan_all(
+            client,
+            _settings(require_project_item=True),
+            discoveries,
+            searched_items=[issue],
+        )
+
+    assert [finding for result in results for finding in result.findings] == []
+
+
+def test_scan_all_reports_real_project_field_missing_on_matching_project() -> None:
+    issue = _issue()
+    item = _project_item(has_estimate=False)
+    client = MagicMock()
+    discoveries = [_discovery(project_number=1), _discovery(project_number=2)]
+    with patch("github_audit.scanner.fetch_project_items", side_effect=[[], [item]]):
+        results = scan_all(
+            client,
+            _settings(require_project_item=True),
+            discoveries,
+            searched_items=[issue],
+        )
+
+    findings = [finding for result in results for finding in result.findings]
+    assert len(findings) == 1
+    assert findings[0].project_number == 2
+    assert findings[0].missing_fields == ["Estimate"]
+
+
+def test_scan_all_keeps_missing_project_item_when_item_is_on_no_project() -> None:
+    issue = _issue()
+    client = MagicMock()
+    discoveries = [_discovery(project_number=1), _discovery(project_number=2)]
+    with patch("github_audit.scanner.fetch_project_items", side_effect=[[], []]):
+        results = scan_all(
+            client,
+            _settings(
+                require_assignee=False,
+                require_target_assignee=False,
+                require_project_item=True,
+                required_project_fields_raw="",
+            ),
+            discoveries,
+            searched_items=[issue],
+        )
+
+    findings = [finding for result in results for finding in result.findings]
+    assert len(findings) == 2
+    assert all(finding.missing_fields == ["Project item"] for finding in findings)

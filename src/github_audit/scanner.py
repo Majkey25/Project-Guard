@@ -38,7 +38,32 @@ def scan_all(
             include_closed_pull_requests=settings.include_closed_pull_requests,
             include_unassigned=settings.include_unassigned,
         )
-    return [scan(client, settings, discovery, searched_items) for discovery in discoveries]
+    project_items_by_number: dict[int, list[ProjectItem]] = {}
+    known_project_content_ids: set[str] | None = None
+    if settings.require_project_item and len(discoveries) > 1:
+        project_items_by_number = {
+            discovery.project_number: fetch_project_items(
+                client, settings.github_org, discovery.project_number
+            )
+            for discovery in discoveries
+        }
+        known_project_content_ids = {
+            item.content_id
+            for project_items in project_items_by_number.values()
+            for item in project_items
+            if item.content_id is not None
+        }
+    return [
+        scan(
+            client,
+            settings,
+            discovery,
+            searched_items,
+            project_items=project_items_by_number.get(discovery.project_number),
+            known_project_content_ids=known_project_content_ids,
+        )
+        for discovery in discoveries
+    ]
 
 
 def scan(
@@ -46,8 +71,12 @@ def scan(
     settings: Settings,
     discovery: DiscoveryResult,
     searched_items: list[GitHubContent] | None = None,
+    *,
+    project_items: list[ProjectItem] | None = None,
+    known_project_content_ids: set[str] | None = None,
 ) -> AuditResult:
-    project_items = fetch_project_items(client, settings.github_org, discovery.project_number)
+    if project_items is None:
+        project_items = fetch_project_items(client, settings.github_org, discovery.project_number)
     allowed_repositories = set(discovery.repositories)
     project_by_content_id = {
         item.content_id: item
@@ -77,11 +106,18 @@ def scan(
     for content in content_by_id.values():
         if not in_updated_range(content, settings):
             continue
+        project_item = project_by_content_id.get(content.id)
+        if (
+            project_item is None
+            and known_project_content_ids is not None
+            and content.id in known_project_content_ids
+        ):
+            continue
         if isinstance(content, GitHubIssue):
             issue_count += 1
         if isinstance(content, GitHubPullRequest):
             pull_request_count += 1
-        finding = evaluate_item(content, project_by_content_id.get(content.id), settings)
+        finding = evaluate_item(content, project_item, settings)
         if finding is not None:
             finding.project_number = discovery.project_number
             finding.project_title = discovery.project_title
