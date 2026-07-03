@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Literal
@@ -119,13 +120,41 @@ def _dedupe_updates(updates: list[ControlUpdate]) -> list[ControlUpdate]:
     return [ControlUpdate(name, value) for name, value in deduped.items()]
 
 
+# Vocabulary of the write tools: an "apply" prompt naming one of these is a NEW
+# request for the agent (e.g. "now apply the bug label"), not a confirmation.
+_NEW_REQUEST_WORDS = re.compile(
+    r"\b(label|comment|estimate|milestone|assignee|reviewer|title|body|field|iteration"
+    r"|priority|difficulty|status|close|reopen|merge|set|add|remove)\b"
+)
+
+
+def should_apply_now(text: str, *, has_pending_writes: bool) -> bool:
+    """True when the message should trigger applying queued writes.
+
+    Confirmation phrasing is intentionally loose ("apply", "yes, apply the
+    changes", ...) but only once writes are queued and only when the prompt
+    doesn't name a new write target. Without queued writes, just the exact
+    `apply it` phrase short-circuits (to show the "nothing pending" hint).
+    """
+    normalized = " ".join(text.casefold().split())
+    if not _wants_apply(normalized):
+        return False
+    if normalized == "apply it":
+        return True
+    return has_pending_writes and not _NEW_REQUEST_WORDS.search(normalized)
+
+
 def _wants_scan(normalized: str) -> bool:
-    return any(word in normalized for word in ("run", "rerun", "rescan", "scan again"))
+    if re.search(r"\b(rescan|rerun)\b", normalized) or "scan again" in normalized:
+        return True
+    return bool(
+        re.search(r"\brun\b", normalized) and re.search(r"\b(scan|again|table)\b", normalized)
+    )
 
 
 def _wants_apply(normalized: str) -> bool:
-    return normalized == "apply it"
+    return bool(re.search(r"\bapply\b", normalized))
 
 
 def _wants_explain(normalized: str) -> bool:
-    return any(word in normalized for word in ("explain", "why", "tell me about", "summarize"))
+    return normalized.startswith(("explain", "why", "tell me about", "summarize"))

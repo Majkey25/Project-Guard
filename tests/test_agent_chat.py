@@ -1,6 +1,11 @@
 from __future__ import annotations
 
-from github_audit.agent_chat import FieldRequest, build_field_plan, parse_agent_command
+from github_audit.agent_chat import (
+    FieldRequest,
+    build_field_plan,
+    parse_agent_command,
+    should_apply_now,
+)
 from github_audit.models import AuditFinding, ProjectFieldDefinition
 
 
@@ -54,10 +59,46 @@ def test_parse_does_not_hardcode_field_updates() -> None:
     assert command.explain is False
 
 
-def test_parse_apply_requires_exact_phrase() -> None:
+def test_parse_apply_matches_natural_confirmations() -> None:
     assert parse_agent_command("apply it").apply_pending is True
+    assert parse_agent_command("apply").apply_pending is True
+    assert parse_agent_command("yes, apply the changes").apply_pending is True
     assert parse_agent_command("do it").apply_pending is False
     assert parse_agent_command("confirm").apply_pending is False
+
+
+def test_should_apply_now_needs_pending_writes_unless_exact_phrase() -> None:
+    assert should_apply_now("apply the changes", has_pending_writes=True) is True
+    assert should_apply_now("Apply it!", has_pending_writes=True) is True
+    assert should_apply_now("apply the changes", has_pending_writes=False) is False
+    assert should_apply_now("apply it", has_pending_writes=False) is True
+    assert should_apply_now("set estimate to 5", has_pending_writes=True) is False
+
+
+def test_should_apply_now_treats_new_write_requests_as_agent_prompts() -> None:
+    # Naming a write target means a NEW request, not a confirmation of queued writes.
+    assert should_apply_now("now apply the bug label", has_pending_writes=True) is False
+    assert should_apply_now("apply estimate 5 too", has_pending_writes=True) is False
+    assert should_apply_now("apply a comment about the delay", has_pending_writes=True) is False
+    # ...but the canonical phrase always confirms.
+    assert should_apply_now("apply it", has_pending_writes=True) is True
+
+
+def test_parse_scan_ignores_run_inside_words_and_field_requests() -> None:
+    assert parse_agent_command("set estimate to 5 and add label trunk").run_scan is False
+    assert parse_agent_command("prune the backlog description").run_scan is False
+    assert parse_agent_command("rerun the scan").run_scan is True
+    assert parse_agent_command("run scan").run_scan is True
+    assert parse_agent_command("rescan").run_scan is True
+    assert parse_agent_command("scan again").run_scan is True
+
+
+def test_parse_explain_only_when_prompt_leads_with_it() -> None:
+    assert parse_agent_command("explain").explain is True
+    assert parse_agent_command("why is this missing an estimate?").explain is True
+    assert parse_agent_command("summarize the findings").explain is True
+    assert parse_agent_command("set estimate to 5 and explain why").explain is False
+    assert parse_agent_command("add a comment explaining the delay").explain is False
 
 
 def test_build_estimate_plan() -> None:

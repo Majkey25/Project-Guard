@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import csv
 import io
 import re
 import shlex
@@ -9,9 +8,10 @@ from pathlib import Path
 from typing import TypedDict, cast
 
 import streamlit as st
+import xlsxwriter  # pyright: ignore[reportMissingTypeStubs]  # typed inline, py.typed missing
 from pydantic import ValidationError
 
-from github_audit.agent_chat import parse_agent_command, summarize_findings
+from github_audit.agent_chat import parse_agent_command, should_apply_now, summarize_findings
 from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
 from github_audit.config import Settings
 from github_audit.discovery import discover_all, discover_repositories
@@ -102,12 +102,43 @@ def _date_label(value: str | None) -> str:
     return value[:10] if value else ""
 
 
-def _csv_bytes(rows: list[FindingRow]) -> bytes:
-    output = io.StringIO()
-    writer = csv.DictWriter(output, fieldnames=list(FindingRow.__annotations__))
-    writer.writeheader()
-    writer.writerows(rows)
-    return output.getvalue().encode("utf-8")
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+_XLSX_HEADERS = {
+    "project": "Project",
+    "project_title": "Project title",
+    "repository": "Repository",
+    "item_type": "Type",
+    "number": "#",
+    "updated_at": "Updated",
+    "title": "Title",
+    "assignees": "Assignees",
+    "missing_fields": "Missing fields",
+    "url": "URL",
+}
+
+
+def _xlsx_bytes(rows: list[FindingRow]) -> bytes:
+    fields = list(FindingRow.__annotations__)
+    buf = io.BytesIO()
+    with xlsxwriter.Workbook(buf, {"in_memory": True}) as book:
+        sheet = book.add_worksheet("Findings")  # pyright: ignore[reportUnknownMemberType]
+        # Excel Table = per-column filter dropdowns + banded rows out of the box.
+        # Table range needs at least one data row, even when there are no findings.
+        sheet.add_table(
+            0,
+            0,
+            max(len(rows), 1),
+            len(fields) - 1,
+            {
+                "data": [[dict(row)[f] for f in fields] for row in rows],
+                "columns": [{"header": _XLSX_HEADERS[f]} for f in fields],
+                "style": "Table Style Medium 9",
+            },
+        )
+        sheet.freeze_panes(1, 0)
+        sheet.autofit(300)
+    return buf.getvalue()
 
 
 # ── load .env defaults (read once, cached) ────────────────────────────────────
@@ -461,6 +492,14 @@ with st.sidebar:
             st.caption(f"✅ AI features enabled ({llm_provider})")
         else:
             st.caption("Enter model name and API key when required to enable AI features.")
+        auto_apply_enabled = st.checkbox(
+            "Allow GitHub writes (AUTO_APPLY)",
+            value=_bool("AUTO_APPLY"),
+            help=(
+                "Lets the AI assistant write queued changes (fields, comments, labels, ...) "
+                "to GitHub after you confirm with `apply it`. Off = previews only."
+            ),
+        )
 
     st.divider()
     if st.button("💾 Save settings to .env", width="stretch"):
@@ -490,6 +529,7 @@ with st.sidebar:
                 "LLM_BASE_URL": llm_base_url,
                 "LLM_API_VERSION": llm_api_version,
                 "LLM_ENABLED": "true",
+                "AUTO_APPLY": "true" if auto_apply_enabled else "false",
             }
             if not _ollama:
                 _env_save["LLM_API_KEY"] = llm_api_key
@@ -723,8 +763,11 @@ def _pending_apply_reply() -> str:
     fields = cast(list[ProjectFieldDefinition] | None, st.session_state.agent_pending_fields)
     if not pending_writes:
         return "No pending write. Select a finding and ask for a field change, comment, or edit."
-    if not _bool("AUTO_APPLY"):
-        return "Write blocked: AUTO_APPLY must be true."
+    if not auto_apply_enabled:
+        return (
+            "Write blocked: enable **Allow GitHub writes (AUTO_APPLY)** in the sidebar "
+            "(⚙️ Config → 🧠 AI Assistant), then say `apply it` again."
+        )
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
     applied = 0
@@ -756,6 +799,22 @@ def _pending_apply_reply() -> str:
     return f"Applied {applied} write(s). Rerunning scan."
 
 
+def _finding_from_prompt(
+    prompt: str,
+    findings_store: dict[tuple[str, str, int], AuditFinding],
+) -> AuditFinding | None:
+    """Resolve a '#123' / 'issue 123' reference to a uniquely numbered scanned finding."""
+    refs = {
+        int(match.group(1))
+        for match in re.finditer(r"(?:#|\b(?:issue|pr)\s+#?)(\d+)", prompt, re.IGNORECASE)
+    }
+    if len(refs) != 1:
+        return None
+    number = refs.pop()
+    matches = [finding for (_, _, num), finding in findings_store.items() if num == number]
+    return matches[0] if len(matches) == 1 else None
+
+
 def _agent_reply(
     prompt: str,
     selected_key: tuple[str, str, int] | None,
@@ -766,7 +825,8 @@ def _agent_reply(
     command = parse_agent_command(prompt)
     replies: list[str] = []
 
-    if command.apply_pending:
+    has_pending = bool(st.session_state.agent_pending_writes)
+    if should_apply_now(prompt, has_pending_writes=has_pending):
         return _pending_apply_reply()
 
     pending_controls = cast(
@@ -788,6 +848,9 @@ def _agent_reply(
         st.session_state.findings or {},
     )
     selected_finding = findings_store.get(selected_key) if selected_key else None
+    if selected_finding is None:
+        # Let "add estimate 5 to #123"-style prompts work without the dropdown.
+        selected_finding = _finding_from_prompt(prompt, findings_store)
 
     if command.explain:
         if selected_finding is not None:
@@ -931,7 +994,14 @@ def _agent_reply(
                     if preview:
                         replies.append("Prepared write preview:")
                         replies.extend(preview)
-                        replies.append("Say `apply it` to write. Requires `AUTO_APPLY=true`.")
+                        if auto_apply_enabled:
+                            replies.append("Say `apply it` to write.")
+                        else:
+                            replies.append(
+                                "Say `apply it` to write — but first enable "
+                                "**Allow GitHub writes (AUTO_APPLY)** in the sidebar "
+                                "(⚙️ Config → 🧠 AI Assistant)."
+                            )
                     return "\n\n".join(replies)
 
                 reply, new_msgs = general_chat(
@@ -996,12 +1066,12 @@ def _render_agent_assistant() -> None:
 
     if not _agent_messages():
         if selected_key:
-            st.info(
-                "Ask for a Project field update or comment — then confirm with `apply it`. "
-                "Requires `AUTO_APPLY=true`."
-            )
+            st.info("Ask for a Project field update or comment — then confirm with `apply it`.")
         else:
-            st.info("Say `explain` for a batch summary, or pick a finding above to work on it.")
+            st.info(
+                "Say `explain` for a batch summary, pick a finding above, or reference one "
+                "directly — e.g. `add estimate 5 to #123`."
+            )
 
     for message in _agent_messages():
         with st.chat_message(message["role"]):
@@ -1165,10 +1235,11 @@ st.dataframe(
 )
 
 st.download_button(
-    "⬇️ Download filtered CSV",
-    _csv_bytes(filtered),
-    "findings.csv",
-    "text/csv",
+    "⬇️ Download filtered Excel",
+    _xlsx_bytes(filtered),
+    "findings.xlsx",
+    _XLSX_MIME,
+    on_click="ignore",
 )
 
 with st.expander("📊 Missing field breakdown"):

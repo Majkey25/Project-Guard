@@ -9,7 +9,7 @@ from threading import Lock
 from typing import TYPE_CHECKING
 from uuid import uuid4
 
-from github_audit.agent_chat import parse_agent_command
+from github_audit.agent_chat import should_apply_now
 from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
 from github_audit.config import Settings, load_settings
 from github_audit.discovery import discover_all, discover_repositories
@@ -171,7 +171,7 @@ class ProjectGuardChatService:
             raise ChatInputError("message is empty")
         settings = load_settings()
         session_id, state = self._sessions.get(conversation_id)
-        if parse_agent_command(message).apply_pending:
+        if should_apply_now(message, has_pending_writes=bool(state.pending_writes)):
             return ChatResult(session_id, self._apply_pending(settings, state))
 
         snapshot = self._scan_snapshot(settings)
@@ -194,12 +194,12 @@ class ProjectGuardChatService:
         message = message.strip()
         if not message:
             raise ChatInputError("message is empty")
-        if context or parse_agent_command(message).apply_pending:
+        session_id, state = self._sessions.get(conversation_id)
+        if context or should_apply_now(message, has_pending_writes=bool(state.pending_writes)):
             return None
         settings = load_settings()
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
-        session_id, state = self._sessions.get(conversation_id)
         snapshot = self._scan_snapshot(settings)
         chunks: list[str] = []
         token_iter, get_new_messages = general_chat_stream(

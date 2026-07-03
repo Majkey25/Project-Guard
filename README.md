@@ -38,23 +38,93 @@ API keys are stored in `.env` on your machine only. They are never logged or sen
 - One project, many projects, or all projects in an organization.
 - One repo, many repos, or all organization repos.
 
-## Quick Start
+## Setup Guide — Step by Step
 
-```sh
-uv sync
-copy .env.example .env
-uv run streamlit run app.py
-```
+You don't need any programming experience. The whole setup is: install one helper
+program, download this app, start it, and create a GitHub token so the app can
+read your projects. About 10 minutes.
 
-Open the Streamlit page, fill in the sidebar, then click **💾 Save settings to .env** to persist everything locally. Settings survive restarts — no login, no cookies.
+### Step 1 — Install `uv` (one time only)
 
-For the HTTP API used by oklab-web:
+`uv` is a small helper that downloads everything the app needs (including Python).
+
+1. Press the **Windows key**, type `powershell`, press **Enter**. A blue/black text window opens.
+2. Copy this line, paste it into that window (right-click pastes), press **Enter**:
+
+   ```powershell
+   powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+   ```
+
+3. When it finishes, **close the window** (the next step needs a fresh one).
+
+On macOS or Linux use: `curl -LsSf https://astral.sh/uv/install.sh | sh`
+
+### Step 2 — Download the app
+
+No git needed:
+
+1. Open <https://github.com/Majkey25/Project-Guard> in your browser.
+2. Click the green **Code** button → **Download ZIP**.
+3. Find the downloaded `Project-Guard-main.zip`, right-click it → **Extract All…**
+   and extract it into your `Documents` folder.
+
+(If you know git: `git clone https://github.com/Majkey25/Project-Guard.git` works too —
+then your folder is called `Project-Guard` instead of `Project-Guard-main`.)
+
+### Step 3 — Start the app
+
+1. Open a **new** PowerShell window (Windows key → `powershell` → Enter).
+2. Paste these two lines and press **Enter**:
+
+   ```powershell
+   cd $HOME\Documents\Project-Guard-main
+   uv run streamlit run app.py
+   ```
+
+3. The **first start takes a minute or two** — `uv` downloads Python and all
+   dependencies automatically. After that, your browser opens the app at
+   <http://localhost:8501>.
+
+Keep the PowerShell window open while you use the app — closing it stops the app.
+Next time, only Step 3 is needed, and it starts in seconds.
+
+### Step 4 — Create your GitHub token (PAT)
+
+The app needs a "personal access token" — a kind of password that lets it read
+your GitHub projects. You create it once on the GitHub website:
+
+1. Go to <https://github.com/settings/tokens> (sign in if asked).
+   *(That's: your profile picture → **Settings** → **Developer settings** →
+   **Personal access tokens** → **Tokens (classic)**.)*
+2. Click **Generate new token** → **Generate new token (classic)**.
+3. **Note**: type something like `GitHub Audit`. **Expiration**: e.g. 90 days.
+4. Tick these checkboxes ("scopes"):
+   - `repo`
+   - `read:org`
+   - `project` *(needed if you want the AI assistant to write field values;
+     for read-only scanning `read:project` is enough)*
+5. Click **Generate token** at the bottom and **copy the token immediately**
+   (it looks like `ghp_...` and is shown only once). Treat it like a password.
+6. If your organization uses SSO/SAML sign-in: on the token list page click
+   **Configure SSO** next to the new token and authorize it for your organization.
+
+### Step 5 — First scan
+
+Back in the app in your browser:
+
+1. In the left sidebar, open **🔑 GitHub Connection** and paste your token.
+2. Fill in your **Organization** name (the part after `github.com/` in your org's URL).
+3. Either tick **All org projects**, or enter your project numbers/URLs.
+4. Click **💾 Save settings to .env** — settings are stored locally and survive restarts.
+5. Click **▶ Run Scan**. Results appear as a table you can filter and download as Excel.
+
+### HTTP API (optional, for developers)
 
 ```sh
 uv run github-audit-api --host 127.0.0.1 --port 8010
 ```
 
-Point the oklab-web project API URL at `http://127.0.0.1:8010/chat`. The endpoint accepts `POST /chat?stream=true` with `prompt` or `message`, streams `data: {"delta": ...}` chunks for general chat, sends a final JSON payload, then `data: [DONE]`. `GET /status` and `GET /context` are also available.
+API URL at `http://127.0.0.1:8010/chat`. The endpoint accepts `POST /chat?stream=true` with `prompt` or `message`, streams `data: {"delta": ...}` chunks for general chat, sends a final JSON payload, then `data: [DONE]`. `GET /status` and `GET /context` are also available.
 
 ## Sidebar Settings
 
@@ -71,6 +141,7 @@ Point the oklab-web project API URL at `http://127.0.0.1:8010/chat`. The endpoin
 | Repository Scope | Allowlist / denylist | Limit or exclude specific repos |
 | AI Assistant | Provider | `openai`, `azure`, `openai-compatible`, or `ollama` (local) |
 | AI Assistant | Model / API key | Provider-specific model name and key |
+| AI Assistant | Allow GitHub writes | Lets the assistant apply queued changes (`AUTO_APPLY`) |
 
 Click **💾 Save settings to .env** (above Run Scan) to write all current sidebar values to `.env`. They load automatically on the next start.
 
@@ -99,28 +170,22 @@ Configure in the sidebar and save, or set values in `.env` directly.
 
 ### What the assistant can write
 
-When you select an issue or PR in the table, the assistant can queue: Project V2 field updates,
-new comments, title/body edits, label add/remove, assignee add/remove, close/reopen (with an
+Select an issue or PR in the AI panel dropdown — or just reference it in your message,
+e.g. `add estimate 5 to #123`. The assistant can queue: Project V2 field updates, new
+comments, title/body edits, label add/remove, assignee add/remove, close/reopen (with an
 optional reason for issues), setting or clearing the milestone, merging a pull request, and
-requesting PR reviewers. Every write is a **preview only** — nothing touches GitHub until you
-reply `apply it` and `AUTO_APPLY=true` is set. Not yet supported: creating new issues/PRs, editing
-or deleting existing comments, changing a PR's base branch, and draft/ready-for-review toggling.
+requesting PR reviewers. Every write is a **preview only** — nothing touches GitHub until
+you confirm with `apply it`, and **Allow GitHub writes (AUTO_APPLY)** must be enabled in
+the sidebar (⚙️ Config → 🧠 AI Assistant). Not yet supported: creating new issues/PRs,
+editing or deleting existing comments, changing a PR's base branch, and
+draft/ready-for-review toggling.
 
-## GitHub Token
+## GitHub Token Scopes
 
-Create a classic GitHub personal access token.
+Creation walkthrough: see [Step 4 above](#step-4--create-your-github-token-pat).
 
-Read-only scans need:
-
-- `repo`
-- `read:org`
-- `read:project`
-
-Writing suggested values back needs:
-
-- `repo`
-- `read:org`
-- `project`
+- Read-only scans: `repo`, `read:org`, `read:project`
+- Writing values back (AI assistant / `apply`): `repo`, `read:org`, `project`
 
 If your organization uses SAML SSO, authorize the token for the organization after creating it.
 
@@ -150,6 +215,7 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `INCLUDE_CLOSED_PULL_REQUESTS` | Also scan closed/merged PRs | `false` |
 | `GITHUB_UPDATED_FROM` | `YYYY-MM-DD` lower bound | — |
 | `GITHUB_UPDATED_TO` | `YYYY-MM-DD` upper bound | — |
+| `AUTO_APPLY` | Allow the AI assistant and `apply` to write to GitHub | `false` |
 | `LLM_ENABLED` | Enable AI features | `true` |
 | `LLM_PROVIDER` | `openai`, `azure`, `openai-compatible`, `ollama` | `openai` |
 | `LLM_MODEL_NAME` | Model ID | — |
