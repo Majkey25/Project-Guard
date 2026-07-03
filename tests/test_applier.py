@@ -604,3 +604,96 @@ def test_describe_pending_write_milestone_clear() -> None:
     plan = MilestoneUpdatePlan(content_id="I_1", repository="org/repo", item_type="issue", number=1)
     lines = describe_pending_write(plan)
     assert "(clear)" in lines[0]
+
+
+def test_apply_add_to_project_returns_new_item_id() -> None:
+    from github_audit.applier import apply_add_to_project
+    from github_audit.models import AddToProjectPlan
+
+    client = MagicMock()
+    client.graphql.return_value = {"addProjectV2ItemById": {"item": {"id": "PVTI_new"}}}
+    plan = AddToProjectPlan(
+        project_id="PVT_1",
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=7,
+    )
+    assert apply_add_to_project(client, plan) == "PVTI_new"
+    variables = client.graphql.call_args.args[1]
+    assert variables == {"input": {"projectId": "PVT_1", "contentId": "I_1"}}
+
+
+def test_apply_pending_write_records_created_item_id() -> None:
+    from github_audit.applier import apply_pending_write
+    from github_audit.models import AddToProjectPlan
+
+    client = MagicMock()
+    client.graphql.return_value = {"addProjectV2ItemById": {"item": {"id": "PVTI_new"}}}
+    plan = AddToProjectPlan(
+        project_id="PVT_1",
+        content_id="I_1",
+        repository="org/repo",
+        item_type="issue",
+        number=7,
+    )
+    created: dict[str, str] = {}
+    apply_pending_write(client, plan, created_item_ids=created)
+    assert created == {"I_1": "PVTI_new"}
+
+
+def test_apply_plan_resolves_item_id_from_created_map() -> None:
+    from github_audit.applier import apply_plan
+
+    client = MagicMock()
+    field = ProjectFieldDefinition(id="f-est", name="Estimate", data_type="NUMBER", kind="field")
+    change = ApplyChange(
+        repository="org/repo",
+        item_type="issue",
+        number=7,
+        project_item_id="",
+        field_name="Estimate",
+        value=10,
+        content_id="I_1",
+    )
+    result = apply_plan(
+        client,
+        ApplyPlan(changes=[change]),
+        "PVT_1",
+        [field],
+        dry_run=False,
+        allow_write=True,
+        created_item_ids={"I_1": "PVTI_new"},
+    )
+    assert len(result.applied) == 1
+    variables = client.graphql.call_args.args[1]
+    assert variables["input"]["itemId"] == "PVTI_new"
+
+
+def test_apply_plan_fails_cleanly_when_item_never_added() -> None:
+    from github_audit.applier import apply_plan
+
+    client = MagicMock()
+    field = ProjectFieldDefinition(id="f-est", name="Estimate", data_type="NUMBER", kind="field")
+    change = ApplyChange(
+        repository="org/repo",
+        item_type="issue",
+        number=7,
+        project_item_id="",
+        field_name="Estimate",
+        value=10,
+        content_id="I_1",
+    )
+    try:
+        apply_plan(
+            client,
+            ApplyPlan(changes=[change]),
+            "PVT_1",
+            [field],
+            dry_run=False,
+            allow_write=True,
+        )
+        raise AssertionError("expected PartialApplyError")
+    except PartialApplyError as exc:
+        assert "not on the project board" in str(exc)
+    client.graphql.assert_not_called()

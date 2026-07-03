@@ -16,7 +16,13 @@ from github_audit.applier import PartialApplyError, apply_pending_write, describ
 from github_audit.config import Settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
-from github_audit.models import ApplyPlan, AuditFinding, PendingWrite, ProjectFieldDefinition
+from github_audit.models import (
+    AddToProjectPlan,
+    ApplyPlan,
+    AuditFinding,
+    PendingWrite,
+    ProjectFieldDefinition,
+)
 from github_audit.project_fields import (
     fetch_assignable_users,
     fetch_repo_labels,
@@ -282,13 +288,19 @@ with st.sidebar:
 
     with st.expander("✅ Checks to flag", expanded=True):
         req_board = st.checkbox(
-            "Items not on selected project board",
+            "Issues not on selected project board",
             value=_bool("REQUIRE_PROJECT_ITEM", "false"),
             help=(
-                "Flag issues and PRs that are not linked to any of the scanned "
+                "Flag issues that are not linked to any of the scanned "
                 "GitHub Project V2 boards. "
-                "Turn this off if repo issues/PRs are allowed to exist outside the selected board."
+                "Turn this off if repo issues are allowed to exist outside the selected board."
             ),
+        )
+        req_board_prs = st.checkbox(
+            "…also require board item for pull requests",
+            value=_bool("REQUIRE_PROJECT_ITEM_PULL_REQUESTS", "false"),
+            disabled=not req_board,
+            help="Off (default): only issues must be on the board — PRs are exempt.",
         )
         require_fields = st.checkbox(
             "Missing required project fields",
@@ -511,6 +523,7 @@ with st.sidebar:
                 "GITHUB_INCLUDE_CLOSED_PROJECTS": "true" if include_closed_projects else "false",
                 "GITHUB_PROJECT_NUMBERS": _project_numbers(project_numbers),
                 "REQUIRE_PROJECT_ITEM": "true" if req_board else "false",
+                "REQUIRE_PROJECT_ITEM_PULL_REQUESTS": "true" if req_board_prs else "false",
                 "REQUIRED_PROJECT_FIELDS": _csv(required_fields) if require_fields else "",
                 "REQUIRE_ASSIGNEE": "true" if require_assignee else "false",
                 "REQUIRE_DEVELOPMENT_LINK": "true" if require_dev else "false",
@@ -586,6 +599,7 @@ def _run_scan() -> None:
                 "require_development_link": require_dev,
                 "require_linked_pr_or_branch": require_pr_branch,
                 "require_project_item": req_board,
+                "require_project_item_pull_requests": req_board_prs,
                 "require_assignee": require_assignee,
                 # silence the validator when no assignees are entered
                 "require_target_assignee": require_target and bool(assignees.strip()),
@@ -770,11 +784,23 @@ def _pending_apply_reply() -> str:
         )
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."
+    # Board adds must run first — later field updates resolve their project item
+    # id from the add's result via created_item_ids.
+    pending_writes = [w for w in pending_writes if isinstance(w, AddToProjectPlan)] + [
+        w for w in pending_writes if not isinstance(w, AddToProjectPlan)
+    ]
+    created_item_ids: dict[str, str] = {}
     applied = 0
     with GitHubClient(token) as client:
         for index, write in enumerate(pending_writes):
             try:
-                apply_pending_write(client, write, project_id=project_id, fields=fields)
+                apply_pending_write(
+                    client,
+                    write,
+                    project_id=project_id,
+                    fields=fields,
+                    created_item_ids=created_item_ids,
+                )
             except PartialApplyError as exc:
                 remaining = _trim_partial_apply(write, exc, pending_writes[index + 1 :])
                 st.session_state.agent_pending_writes = remaining
@@ -1029,7 +1055,7 @@ def _agent_reply(
     return "\n\n".join(replies)
 
 
-def _render_agent_assistant() -> None:
+def _render_agent_assistant(visible_rows: list[FindingRow]) -> None:
     st.markdown("**🧠 AI Assistant**")
 
     all_rows = cast(list[FindingRow], st.session_state.rows or [])
@@ -1040,19 +1066,23 @@ def _render_agent_assistant() -> None:
     stats = cast(ScanStats | None, st.session_state.stats)
 
     _ALL_LABEL = "🔍 All findings"
+    # Mirror the table: only rows passing the current filters are offered.
     target_options = {
         f"#{row['number']} {row['title'][:40]}": (
             row["repository"],
             row["item_type"],
             row["number"],
         )
-        for row in all_rows[:200]
+        for row in visible_rows[:200]
     }
     selected_key: tuple[str, str, int] | None = None
     if all_rows:
+        options = [_ALL_LABEL, *target_options]
+        if st.session_state.get("agent_target_finding") not in options:
+            st.session_state.agent_target_finding = _ALL_LABEL
         selected_label = st.selectbox(
             "Finding",
-            [_ALL_LABEL, *target_options],
+            options,
             key="agent_target_finding",
             label_visibility="collapsed",
         )
@@ -1062,7 +1092,10 @@ def _render_agent_assistant() -> None:
             if selected and selected.missing_fields:
                 st.caption(f"Missing: {', '.join(selected.missing_fields)}")
         else:
-            st.caption(f"{len(all_rows)} findings — say `explain` for a batch summary.")
+            st.caption(
+                f"{len(visible_rows)} of {len(all_rows)} findings (table filters apply) — "
+                "say `explain` for a batch summary."
+            )
 
     if not _agent_messages():
         if selected_key:
@@ -1083,7 +1116,7 @@ def _render_agent_assistant() -> None:
 
     if submitted and prompt:
         _add_agent_message("user", prompt)
-        reply = _agent_reply(prompt, selected_key, all_rows, all_rows, stats)
+        reply = _agent_reply(prompt, selected_key, all_rows, visible_rows, stats)
         _add_agent_message("assistant", reply)
         st.rerun()
 
@@ -1094,13 +1127,15 @@ with _h1:
     st.title("🔍 GitHub Audit")
 with _h2:
     st.write("")
-    with st.popover("AI", use_container_width=True, help="Open AI assistant"):
-        _render_agent_assistant()
+    # Filled after the table filters run so the AI dropdown mirrors the table.
+    _ai_popover = st.popover("AI", use_container_width=True, help="Open AI assistant")
 
 if st.session_state.error:
     st.error(st.session_state.error)
 
 if st.session_state.rows is None:
+    with _ai_popover:
+        _render_agent_assistant([])
     st.info(
         "Configure settings in the sidebar, then click **▶ Run Scan** to audit "
         "your GitHub Projects for missing fields and workflow gaps."
@@ -1123,6 +1158,8 @@ c2.metric("PRs scanned", stats["prs"])
 c3.metric("Findings", stats["findings"])
 
 if not rows:
+    with _ai_popover:
+        _render_agent_assistant([])
     st.success("✅ No findings — everything looks good!")
     st.stop()
 
@@ -1156,16 +1193,28 @@ _date_active = bool(
 )
 _date_btn_label = "📅 ●" if _date_active else "📅"
 
+# Explicit keys keep selections alive across rescans; prune values that no
+# longer exist in the fresh options (a stale value would raise otherwise).
+for _fk, _fopts in (
+    ("filter_repos", all_repos),
+    ("filter_missing", all_missing),
+    ("filter_assignees", all_assignees),
+    ("filter_types", all_types),
+    ("filter_projects", all_proj_options),
+):
+    if _fk in st.session_state:
+        st.session_state[_fk] = [v for v in st.session_state[_fk] if v in _fopts]
+
 with fc1:
-    sel_repos = st.multiselect("Repository", all_repos)
+    sel_repos = st.multiselect("Repository", all_repos, key="filter_repos")
 with fc2:
-    sel_missing = st.multiselect("Missing field", all_missing)
+    sel_missing = st.multiselect("Missing field", all_missing, key="filter_missing")
 with fc3:
-    sel_assignees = st.multiselect("Assignee", all_assignees)
+    sel_assignees = st.multiselect("Assignee", all_assignees, key="filter_assignees")
 with fc4:
-    sel_types = st.multiselect("Type", all_types)
+    sel_types = st.multiselect("Type", all_types, key="filter_types")
 with fc5:
-    sel_proj_labels = st.multiselect("Project", all_proj_options)
+    sel_proj_labels = st.multiselect("Project", all_proj_options, key="filter_projects")
 with fc6:
     st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
     with st.popover(_date_btn_label, use_container_width=True, help="Filter by last updated date"):
@@ -1204,6 +1253,9 @@ for row in rows:
     filtered.append(row)
 
 st.caption(f"Showing **{len(filtered)}** of {len(rows)} findings")
+
+with _ai_popover:
+    _render_agent_assistant(filtered)
 
 # ── results table ─────────────────────────────────────────────────────────────
 st.dataframe(

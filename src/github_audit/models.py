@@ -60,6 +60,7 @@ class ProjectItem(BaseModel):
     comments_total_count: int = 0
     milestone: str | None = None
     updated_at: str | None = None
+    state: str = ""
     field_values: dict[str, ProjectFieldValue] = Field(default_factory=dict)
     linked_pull_requests_count: int = 0
     closing_issues_count: int = 0
@@ -224,11 +225,14 @@ class ApplyChange(BaseModel):
     repository: str
     item_type: ItemType
     number: int
+    # Empty when the item is not on the board yet — resolved at apply time from
+    # the project item created by a preceding AddToProjectPlan (via content_id).
     project_item_id: str
     field_name: str
     value: str | int | float | bool
     option_id: str | None = None
     iteration_id: str | None = None
+    content_id: str | None = None
 
 
 class ApplyPlan(BaseModel):
@@ -245,6 +249,18 @@ class ApplyResult(BaseModel):
     dry_run: bool
     applied: list[ApplyChange]
     skipped: list[str] = Field(default_factory=list)
+
+
+class AddToProjectPlan(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["add_to_project"] = "add_to_project"
+    project_id: str
+    content_id: str
+    repository: str
+    item_type: ItemType
+    number: int
+    project_title: str | None = None
 
 
 class IssueCommentPlan(BaseModel):
@@ -340,6 +356,7 @@ class ReviewerRequestPlan(BaseModel):
 
 PendingWrite = (
     ApplyPlan
+    | AddToProjectPlan
     | IssueCommentPlan
     | IssueEditPlan
     | LabelUpdatePlan

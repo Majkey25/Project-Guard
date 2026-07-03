@@ -70,12 +70,22 @@ def build_field_plan(
     request: FieldRequest,
     *,
     replace_existing: bool = False,
+    allow_pending_board_add: bool = False,
 ) -> ApplyPlan:
+    """Build a one-field ApplyPlan.
+
+    With allow_pending_board_add, an item that is not on the board yet is queued
+    with an empty project_item_id — resolved at apply time from the project item
+    created by an AddToProjectPlan earlier in the same batch.
+    """
     changes: list[ApplyChange] = []
     skipped: list[str] = []
-    if finding.project_item_id is None:
-        skipped.append(f"{finding.repository}#{finding.number}: no project item")
-        return ApplyPlan(changes=changes, skipped=skipped)
+    project_item_id = finding.project_item_id
+    if project_item_id is None:
+        if not (allow_pending_board_add and finding.content_id):
+            skipped.append(f"{finding.repository}#{finding.number}: no project item")
+            return ApplyPlan(changes=changes, skipped=skipped)
+        project_item_id = ""
 
     field_name = _resolve_field_name(fields, request)
     value = request.value
@@ -86,12 +96,13 @@ def build_field_plan(
         finding.repository,
         finding.item_type,
         finding.number,
-        finding.project_item_id,
+        project_item_id,
         {field.name: field for field in fields},
         field_name,
         value,
         finding.current_project_fields,
         replace_existing=replace_existing,
+        content_id=finding.content_id,
     )
     return ApplyPlan(changes=changes, skipped=skipped)
 
@@ -120,28 +131,27 @@ def _dedupe_updates(updates: list[ControlUpdate]) -> list[ControlUpdate]:
     return [ControlUpdate(name, value) for name, value in deduped.items()]
 
 
-# Vocabulary of the write tools: an "apply" prompt naming one of these is a NEW
-# request for the agent (e.g. "now apply the bug label"), not a confirmation.
-_NEW_REQUEST_WORDS = re.compile(
-    r"\b(label|comment|estimate|milestone|assignee|reviewer|title|body|field|iteration"
-    r"|priority|difficulty|status|close|reopen|merge|set|add|remove)\b"
+# Confirmation-shaped messages only: "apply", "apply it", "yes, apply the changes",
+# "ok apply it now". Anything else containing "apply" (questions, new requests) must
+# fall through to the agent — the safe direction, since worst case is a re-preview.
+_CONFIRM_APPLY = re.compile(
+    r"(?:(?:ok|okay|yes|sure|please|go ahead)[,.! ]+)*"
+    r"apply(?: it| them| that| this| all| the changes?| now| please)*[.!]*"
 )
 
 
 def should_apply_now(text: str, *, has_pending_writes: bool) -> bool:
-    """True when the message should trigger applying queued writes.
+    """True when the message should trigger applying queued GitHub writes.
 
-    Confirmation phrasing is intentionally loose ("apply", "yes, apply the
-    changes", ...) but only once writes are queued and only when the prompt
-    doesn't name a new write target. Without queued writes, just the exact
-    `apply it` phrase short-circuits (to show the "nothing pending" hint).
+    Only a whole-message confirmation counts — a sentence that merely contains
+    "apply" ("does this rule apply to closed PRs?") never triggers writes.
+    Without queued writes, just the exact `apply it` phrase short-circuits
+    (to show the "nothing pending" hint).
     """
     normalized = " ".join(text.casefold().split())
     if not _wants_apply(normalized):
         return False
-    if normalized == "apply it":
-        return True
-    return has_pending_writes and not _NEW_REQUEST_WORDS.search(normalized)
+    return has_pending_writes or normalized == "apply it"
 
 
 def _wants_scan(normalized: str) -> bool:
@@ -153,7 +163,7 @@ def _wants_scan(normalized: str) -> bool:
 
 
 def _wants_apply(normalized: str) -> bool:
-    return bool(re.search(r"\bapply\b", normalized))
+    return _CONFIRM_APPLY.fullmatch(normalized) is not None
 
 
 def _wants_explain(normalized: str) -> bool:

@@ -687,6 +687,7 @@ def parse_project_item(raw: JsonObject) -> ProjectItem:
         comments_total_count=parsed_content.comments_total_count,
         milestone=parsed_content.milestone,
         updated_at=parsed_content.updated_at,
+        state=parsed_content.state,
         field_values=field_values,
         linked_pull_requests_count=(
             parsed_content.linked_pull_requests_count

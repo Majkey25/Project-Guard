@@ -21,15 +21,21 @@ def evaluate_item(
         targets = set(settings.target_assignees)
         if not targets.intersection(content.assignees):
             missing.append("target assignee")
-    if settings.require_project_item and project_item is None:
+    # PRs only need a board item when explicitly required; issues always do.
+    if (
+        settings.require_project_item
+        and project_item is None
+        and (isinstance(content, GitHubIssue) or settings.require_project_item_pull_requests)
+    ):
         missing.append("Project item")
     current_values: dict[str, str] = {}
     if project_item is not None:
         current_values = {
             name: str(value.value) for name, value in sorted(project_item.field_values.items())
         }
+        present_names = {name.casefold() for name in project_item.field_values}
         for field_name in settings.required_project_fields:
-            if field_name not in project_item.field_values:
+            if field_name.casefold() not in present_names:
                 missing.append(field_name)
     if (
         settings.require_development_link or settings.require_linked_pr_or_branch

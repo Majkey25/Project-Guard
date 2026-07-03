@@ -325,3 +325,40 @@ def test_scan_all_keeps_missing_project_item_when_item_is_on_no_project() -> Non
     findings = [finding for result in results for finding in result.findings]
     assert len(findings) == 2
     assert all(finding.missing_fields == ["Project item"] for finding in findings)
+
+
+def test_scan_excludes_closed_board_issue_when_closed_not_included() -> None:
+    closed_item = _project_item()
+    closed_item.state = "CLOSED"
+    with (
+        patch("github_audit.scanner.fetch_project_items", return_value=[closed_item]),
+        patch("github_audit.scanner.search_items", return_value=[]),
+    ):
+        result = scan(MagicMock(), _settings(), _discovery())
+    assert result.findings == []
+    assert result.scanned_issue_count == 0
+
+
+def test_scan_includes_closed_board_issue_when_enabled() -> None:
+    closed_item = _project_item(has_estimate=False)
+    closed_item.state = "CLOSED"
+    with (
+        patch("github_audit.scanner.fetch_project_items", return_value=[closed_item]),
+        patch("github_audit.scanner.search_items", return_value=[]),
+    ):
+        result = scan(MagicMock(), _settings(include_closed_issues=True), _discovery())
+    assert result.scanned_issue_count == 1
+    assert any("Estimate" in f.missing_fields for f in result.findings)
+
+
+def test_scan_excludes_board_prs_when_prs_not_included() -> None:
+    pr_item = _project_item(content_id="PR_9")
+    pr_item.content_type = "pull_request"
+    pr_item.state = "OPEN"
+    pr_item.number = 9
+    with (
+        patch("github_audit.scanner.fetch_project_items", return_value=[pr_item]),
+        patch("github_audit.scanner.search_items", return_value=[]),
+    ):
+        result = scan(MagicMock(), _settings(include_pull_requests=False), _discovery())
+    assert result.scanned_pull_request_count == 0

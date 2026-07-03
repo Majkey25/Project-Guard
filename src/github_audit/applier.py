@@ -6,6 +6,7 @@ from math import isfinite
 from github_audit.config import Settings
 from github_audit.github_client import GitHubClient, GitHubError, JsonObject
 from github_audit.models import (
+    AddToProjectPlan,
     ApplyChange,
     ApplyPlan,
     ApplyResult,
@@ -27,6 +28,14 @@ UPDATE_FIELD_MUTATION = """
 mutation UpdateProjectField($input: UpdateProjectV2ItemFieldValueInput!) {
   updateProjectV2ItemFieldValue(input: $input) {
     projectV2Item { id }
+  }
+}
+"""
+
+ADD_PROJECT_ITEM_MUTATION = """
+mutation AddProjectItem($input: AddProjectV2ItemByIdInput!) {
+  addProjectV2ItemById(input: $input) {
+    item { id }
   }
 }
 """
@@ -207,6 +216,7 @@ def add_suggested_change(
     current_project_fields: dict[str, str],
     *,
     replace_existing: bool = False,
+    content_id: str | None = None,
 ) -> None:
     if value in (None, ""):
         return
@@ -241,6 +251,7 @@ def add_suggested_change(
             value=value,
             option_id=option_id,
             iteration_id=iteration_id,
+            content_id=content_id,
         )
     )
 
@@ -253,6 +264,7 @@ def apply_plan(
     *,
     dry_run: bool,
     allow_write: bool,
+    created_item_ids: dict[str, str] | None = None,
 ) -> ApplyResult:
     if dry_run or not allow_write:
         skipped = list(plan.skipped)
@@ -268,10 +280,17 @@ def apply_plan(
     skipped = list(plan.skipped)
     for change in plan.changes:
         field = fields_by_name[change.field_name]
+        item_id = change.project_item_id or (created_item_ids or {}).get(change.content_id or "")
+        if not item_id:
+            cause = ValueError(
+                f"{change.repository}#{change.number} is not on the project board;"
+                " add it to the project first"
+            )
+            raise PartialApplyError(applied, skipped, cause)
         variables: JsonObject = {
             "input": {
                 "projectId": project_id,
-                "itemId": change.project_item_id,
+                "itemId": item_id,
                 "fieldId": field.id,
                 "value": build_update_value(change, field),
             }
@@ -297,6 +316,21 @@ def build_update_value(
     if isinstance(change.value, int | float):
         return {"number": change.value}
     return {"text": str(change.value)}
+
+
+def apply_add_to_project(client: GitHubClient, plan: AddToProjectPlan) -> str:
+    """Add the item to the project board; returns the new project item id."""
+    data = client.graphql(
+        ADD_PROJECT_ITEM_MUTATION,
+        {"input": {"projectId": plan.project_id, "contentId": plan.content_id}},
+    )
+    payload = data.get("addProjectV2ItemById")
+    item = payload.get("item") if isinstance(payload, dict) else None
+    item_id = item.get("id") if isinstance(item, dict) else None
+    if not isinstance(item_id, str) or not item_id:
+        msg = "addProjectV2ItemById returned no item id"
+        raise GitHubError(msg)
+    return item_id
 
 
 def add_comment(client: GitHubClient, subject_id: str, body: str) -> None:
@@ -477,13 +511,31 @@ def apply_pending_write(
     *,
     project_id: str | None = None,
     fields: list[ProjectFieldDefinition] | None = None,
+    created_item_ids: dict[str, str] | None = None,
 ) -> None:
-    """Execute one queued write. Raises PartialApplyError or GitHubError on failure."""
+    """Execute one queued write. Raises PartialApplyError or GitHubError on failure.
+
+    created_item_ids (content id -> new project item id) carries the result of
+    AddToProjectPlan writes to later field updates in the same batch; pass the
+    same dict for every write of the batch.
+    """
     if isinstance(write, ApplyPlan):
         if project_id is None or fields is None:
             msg = "project id and fields are required to apply a project field update"
             raise ValueError(msg)
-        apply_plan(client, write, project_id, fields, dry_run=False, allow_write=True)
+        apply_plan(
+            client,
+            write,
+            project_id,
+            fields,
+            dry_run=False,
+            allow_write=True,
+            created_item_ids=created_item_ids,
+        )
+    elif isinstance(write, AddToProjectPlan):
+        new_item_id = apply_add_to_project(client, write)
+        if created_item_ids is not None:
+            created_item_ids[write.content_id] = new_item_id
     elif isinstance(write, IssueCommentPlan):
         add_comment(client, write.subject_id, write.body)
     elif isinstance(write, IssueEditPlan):
@@ -505,6 +557,9 @@ def apply_pending_write(
 def describe_pending_write(write: PendingWrite) -> list[str]:
     if isinstance(write, ApplyPlan):
         return describe_changes(write.changes)
+    if isinstance(write, AddToProjectPlan):
+        target = write.project_title or write.project_id
+        return [f"dry-run: {write.repository}#{write.number} add to project {target}"]
     if isinstance(write, IssueCommentPlan):
         return [
             f"dry-run: {write.repository}#{write.number} add comment",

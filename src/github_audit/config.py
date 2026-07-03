@@ -82,6 +82,9 @@ class Settings(BaseSettings):
     require_assignee: bool = Field(default=True, validation_alias="REQUIRE_ASSIGNEE")
     require_target_assignee: bool = Field(default=True, validation_alias="REQUIRE_TARGET_ASSIGNEE")
     require_project_item: bool = Field(default=True, validation_alias="REQUIRE_PROJECT_ITEM")
+    require_project_item_pull_requests: bool = Field(
+        default=False, validation_alias="REQUIRE_PROJECT_ITEM_PULL_REQUESTS"
+    )
     require_development_link: bool = Field(
         default=True, validation_alias="REQUIRE_DEVELOPMENT_LINK"
     )

@@ -16,6 +16,7 @@ from github_audit.agent_chat import FieldRequest, build_field_plan
 from github_audit.applier import describe_pending_write
 from github_audit.config import Settings
 from github_audit.models import (
+    AddToProjectPlan,
     ApplyPlan,
     AssigneeUpdatePlan,
     AuditFinding,
@@ -165,13 +166,16 @@ and `run scan`.
 
 _PROJECT_AGENT_INSTRUCTIONS = """
 You are the Project Guard assistant. Use tools to inspect the selected GitHub issue or PR and to
-queue GitHub writes. Supported writes: Project V2 field updates, new comments, title/body edits
-(full replacement, not a patch - always restate the exact new text before the user confirms),
-label add/remove, assignee add/remove, close/reopen (with an optional reason for issues), setting
-or clearing the milestone, merging a pull request (state the merge method and note that merging
-is not easily reversible), and requesting PR reviewers (this adds to, never replaces, the existing
-reviewer set). All writes are previews only until the user replies with the exact confirmation
-phrase and AUTO_APPLY=true - never claim a write already happened.
+queue GitHub writes. Supported writes: adding the item to the project board, Project V2 field
+updates, new comments, title/body edits (full replacement, not a patch - always restate the exact
+new text before the user confirms), label add/remove, assignee add/remove, close/reopen (with an
+optional reason for issues), setting or clearing the milestone, merging a pull request (state the
+merge method and note that merging is not easily reversible), and requesting PR reviewers (this
+adds to, never replaces, the existing reviewer set). When the item is not on the project board
+yet, queue prepare_add_to_project first - field updates for the same batch are then allowed and
+run after the item is added. All writes are previews only until the user replies `apply it` (that
+exact phrase) and write access is enabled - never claim a write already happened, and never
+invent a different confirmation phrase such as CONFIRM.
 Still unsupported: creating new issues/PRs, editing or deleting existing comments, changing a PR's
 base branch, and draft/ready-for-review toggling - say those cannot be done yet.
 Use exact Project field names, label names, milestone titles, and login names from the tool
@@ -424,9 +428,40 @@ def read_selected_item(ctx: RunContext[ProjectAgentDeps]) -> str:
         f"Assignable users (for assignees/reviewers): "
         f"{', '.join(sorted(ctx.deps.assignable_users)) or 'none'}",
     ]
+    if finding.project_item_id is None:
+        lines.append(
+            "NOT on the selected project board - call prepare_add_to_project before"
+            " queuing Project field updates."
+        )
     if finding.content_id is None:
         lines.append("Writes cannot be queued because the GitHub node id is missing.")
     return "\n".join(lines)
+
+
+def prepare_add_to_project(ctx: RunContext[ProjectAgentDeps]) -> str:
+    """Queue adding the selected issue/PR to the project board (required before field updates)."""
+    finding = ctx.deps.finding
+    if ctx.deps.project_id is None:
+        return "Cannot queue add-to-project: project id is missing."
+    if finding.content_id is None:
+        return "Cannot queue add-to-project: GitHub node id is missing."
+    if finding.project_item_id is not None:
+        return "The item is already on the project board."
+    plan = AddToProjectPlan(
+        project_id=ctx.deps.project_id,
+        content_id=finding.content_id,
+        repository=finding.repository,
+        item_type=finding.item_type,
+        number=finding.number,
+        project_title=finding.project_title,
+    )
+    _replace_write(ctx.deps.pending_writes, AddToProjectPlan, plan)
+    return "\n".join(["Queued add-to-project preview:", *describe_pending_write(plan)])
+
+
+def _has_queued_board_add(ctx: RunContext[ProjectAgentDeps]) -> bool:
+    queued = _find_write(ctx.deps.pending_writes, AddToProjectPlan)
+    return queued is not None and queued.content_id == ctx.deps.finding.content_id
 
 
 def prepare_project_field_update(
@@ -438,11 +473,18 @@ def prepare_project_field_update(
     finding = ctx.deps.finding
     if ctx.deps.project_id is None:
         return "Cannot queue Project field update: project id is missing."
+    pending_board_add = _has_queued_board_add(ctx)
+    if finding.project_item_id is None and not pending_board_add:
+        return (
+            "The item is not on the project board. Call prepare_add_to_project first;"
+            " then queue the field updates for the same batch."
+        )
     plan = build_field_plan(
         finding,
         ctx.deps.fields,
         FieldRequest(field_name, value),
         replace_existing=True,
+        allow_pending_board_add=pending_board_add,
     )
     if not plan.changes:
         return "\n".join(plan.skipped or ["No Project field update was queued."])
@@ -736,6 +778,7 @@ def _make_project_agent(settings: Settings) -> Agent[ProjectAgentDeps, _ChatRepl
             deps_type=ProjectAgentDeps,
             tools=[
                 Tool(read_selected_item),
+                Tool(prepare_add_to_project),
                 Tool(prepare_project_field_update),
                 Tool(prepare_issue_comment),
                 Tool(prepare_issue_edit),

@@ -10,3 +10,4 @@ dist/
 .streamlit/secrets.toml
 *.local.toml
 *.local.env
+.playwright-mcp/

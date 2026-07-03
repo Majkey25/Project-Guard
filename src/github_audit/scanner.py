@@ -106,6 +106,10 @@ def scan(
     for content in content_by_id.values():
         if not in_updated_range(content, settings):
             continue
+        # Board-sourced items bypass the search filters, so type/state inclusion
+        # must be enforced here (e.g. closed issues sitting on the project board).
+        if not type_and_state_included(content, settings):
+            continue
         project_item = project_by_content_id.get(content.id)
         if (
             project_item is None
@@ -152,7 +156,7 @@ def content_from_project_item(
             number=item.number,
             title=item.title,
             url=item.url,
-            state="",
+            state=item.state,
             body=item.body,
             assignees=item.assignees,
             labels=item.labels,
@@ -169,7 +173,7 @@ def content_from_project_item(
             number=item.number,
             title=item.title,
             url=item.url,
-            state="",
+            state=item.state,
             body=item.body,
             assignees=item.assignees,
             labels=item.labels,
@@ -180,6 +184,18 @@ def content_from_project_item(
             closing_issues_count=item.closing_issues_count,
         )
     return None
+
+
+def type_and_state_included(content: GitHubContent, settings: Settings) -> bool:
+    """Apply the include-issues/PRs and include-closed toggles to one item."""
+    state = content.state.upper()
+    if isinstance(content, GitHubIssue):
+        if not settings.include_issues:
+            return False
+        return settings.include_closed_issues or state != "CLOSED"
+    if not settings.include_pull_requests:
+        return False
+    return settings.include_closed_pull_requests or state not in {"CLOSED", "MERGED"}
 
 
 def in_updated_range(content: GitHubContent, settings: Settings) -> bool:

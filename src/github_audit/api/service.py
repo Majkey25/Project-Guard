@@ -16,6 +16,7 @@ from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import general_chat, general_chat_stream, project_agent_chat
 from github_audit.models import (
+    AddToProjectPlan,
     ApplyPlan,
     AuditFinding,
     AuditResult,
@@ -295,6 +296,12 @@ class ProjectGuardChatService:
             return "No pending write."
         if not settings.auto_apply:
             return "Write blocked: AUTO_APPLY must be true."
+        # Board adds must run first — later field updates resolve their project
+        # item id from the add's result via created_item_ids.
+        state.pending_writes = [
+            w for w in state.pending_writes if isinstance(w, AddToProjectPlan)
+        ] + [w for w in state.pending_writes if not isinstance(w, AddToProjectPlan)]
+        created_item_ids: dict[str, str] = {}
         applied = 0
         with GitHubClient(settings.github_token) as client:
             for index, write in enumerate(state.pending_writes):
@@ -304,6 +311,7 @@ class ProjectGuardChatService:
                         write,
                         project_id=state.pending_project_id,
                         fields=state.pending_fields,
+                        created_item_ids=created_item_ids,
                     )
                 except PartialApplyError as exc:
                     state.pending_writes = _trim_partial_apply(
@@ -316,7 +324,7 @@ class ProjectGuardChatService:
                         f" {len(state.pending_writes)} write(s) remain queued -"
                         " say `apply it` to retry."
                     )
-                except GitHubError as exc:
+                except (GitHubError, ValueError) as exc:
                     state.pending_writes = state.pending_writes[index:]
                     self._clear_snapshot()
                     return (

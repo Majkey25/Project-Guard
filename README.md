@@ -171,10 +171,12 @@ Configure in the sidebar and save, or set values in `.env` directly.
 ### What the assistant can write
 
 Select an issue or PR in the AI panel dropdown — or just reference it in your message,
-e.g. `add estimate 5 to #123`. The assistant can queue: Project V2 field updates, new
-comments, title/body edits, label add/remove, assignee add/remove, close/reopen (with an
-optional reason for issues), setting or clearing the milestone, merging a pull request, and
-requesting PR reviewers. Every write is a **preview only** — nothing touches GitHub until
+e.g. `add estimate 5 to #123`. The assistant can queue: adding the item to the project
+board, Project V2 field updates, new comments, title/body edits, label add/remove,
+assignee add/remove, close/reopen (with an optional reason for issues), setting or
+clearing the milestone, merging a pull request, and requesting PR reviewers. If the item
+isn't on the board yet, ask for the field changes anyway — it queues the board add first
+and the field updates run right after it. Every write is a **preview only** — nothing touches GitHub until
 you confirm with `apply it`, and **Allow GitHub writes (AUTO_APPLY)** must be enabled in
 the sidebar (⚙️ Config → 🧠 AI Assistant). Not yet supported: creating new issues/PRs,
 editing or deleting existing comments, changing a PR's base branch, and
@@ -205,7 +207,8 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `GITHUB_REPOSITORY_DENYLIST` | Repos to always skip | — |
 | `TARGET_ASSIGNEES` | Usernames to watch for target-assignee check | — |
 | `REQUIRED_PROJECT_FIELDS` | Required V2 field names | — |
-| `REQUIRE_PROJECT_ITEM` | Flag items missing from board | `false` |
+| `REQUIRE_PROJECT_ITEM` | Flag issues missing from board | `true` |
+| `REQUIRE_PROJECT_ITEM_PULL_REQUESTS` | Also require a board item for PRs | `false` |
 | `REQUIRE_ASSIGNEE` | Flag unassigned items | `true` |
 | `REQUIRE_DEVELOPMENT_LINK` | Flag items with no dev link | `true` |
 | `REQUIRE_LINKED_PR_OR_BRANCH` | Stricter dev-link check | `true` |

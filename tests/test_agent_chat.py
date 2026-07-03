@@ -84,6 +84,18 @@ def test_should_apply_now_treats_new_write_requests_as_agent_prompts() -> None:
     assert should_apply_now("apply it", has_pending_writes=True) is True
 
 
+def test_should_apply_now_never_fires_on_questions_containing_apply() -> None:
+    # A question mentioning "apply" must never execute queued GitHub writes.
+    assert should_apply_now("does this rule apply to closed PRs?", has_pending_writes=True) is False
+    assert should_apply_now("can I apply a filter to the table?", has_pending_writes=True) is False
+    assert should_apply_now("how do I apply for access?", has_pending_writes=True) is False
+    assert should_apply_now("apply sprint 3 as well", has_pending_writes=True) is False
+    assert should_apply_now("apply the same change to #124", has_pending_writes=True) is False
+    # Confirmation shapes still work.
+    assert should_apply_now("ok apply it now", has_pending_writes=True) is True
+    assert should_apply_now("yes, apply the changes", has_pending_writes=True) is True
+
+
 def test_parse_scan_ignores_run_inside_words_and_field_requests() -> None:
     assert parse_agent_command("set estimate to 5 and add label trunk").run_scan is False
     assert parse_agent_command("prune the backlog description").run_scan is False
@@ -137,5 +149,29 @@ def test_build_field_plan_can_replace_existing_value() -> None:
 
 def test_build_field_plan_skips_without_project_item() -> None:
     plan = build_field_plan(_finding(project_item_id=None), _fields(), FieldRequest("Estimate", 20))
+    assert not plan.changes
+    assert any("no project item" in item for item in plan.skipped)
+
+
+def test_build_field_plan_can_queue_before_board_add() -> None:
+    finding = _finding(project_item_id=None)
+    finding.content_id = "I_7"
+    plan = build_field_plan(
+        finding,
+        _fields(),
+        FieldRequest("Estimate", 10),
+        replace_existing=True,
+        allow_pending_board_add=True,
+    )
+    assert not plan.skipped
+    assert len(plan.changes) == 1
+    assert plan.changes[0].project_item_id == ""
+    assert plan.changes[0].content_id == "I_7"
+
+
+def test_build_field_plan_still_skips_without_board_add_permission() -> None:
+    finding = _finding(project_item_id=None)
+    finding.content_id = "I_7"
+    plan = build_field_plan(finding, _fields(), FieldRequest("Estimate", 10))
     assert not plan.changes
     assert any("no project item" in item for item in plan.skipped)
