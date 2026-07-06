@@ -32,7 +32,6 @@ class FieldRequest:
 class AgentCommand:
     control_updates: tuple[ControlUpdate, ...] = ()
     run_scan: bool = False
-    apply_pending: bool = False
     explain: bool = False
 
 
@@ -40,26 +39,27 @@ def parse_agent_command(text: str) -> AgentCommand:
     normalized = " ".join(text.casefold().split())
     updates: list[ControlUpdate] = []
 
+    # \b guards: "closed pr" must not fire inside "closed projects", nor
+    # "only pr" inside "only project".
     if "closed issue" in normalized:
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_closed_issues", True))
-    if "closed pr" in normalized or "closed pull request" in normalized:
+    if re.search(r"\bclosed (?:prs?|pull requests?)\b", normalized):
         updates.append(ControlUpdate("include_pull_requests", True))
         updates.append(ControlUpdate("include_closed_pull_requests", True))
-    if "only pr" in normalized or "only pull request" in normalized:
+    if re.search(r"\bonly (?:prs?|pull requests?)\b", normalized):
         updates.append(ControlUpdate("include_issues", False))
         updates.append(ControlUpdate("include_pull_requests", True))
     if "only issue" in normalized:
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_pull_requests", False))
-    if "issues and pr" in normalized or "issues and pull request" in normalized:
+    if re.search(r"\bissues and (?:prs?|pull requests?)\b", normalized):
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_pull_requests", True))
 
     return AgentCommand(
         control_updates=tuple(_dedupe_updates(updates)),
         run_scan=_wants_scan(normalized),
-        apply_pending=_wants_apply(normalized),
         explain=_wants_explain(normalized),
     )
 
@@ -131,27 +131,14 @@ def _dedupe_updates(updates: list[ControlUpdate]) -> list[ControlUpdate]:
     return [ControlUpdate(name, value) for name, value in deduped.items()]
 
 
-# Confirmation-shaped messages only: "apply", "apply it", "yes, apply the changes",
-# "ok apply it now". Anything else containing "apply" (questions, new requests) must
-# fall through to the agent — the safe direction, since worst case is a re-preview.
-_CONFIRM_APPLY = re.compile(
-    r"(?:(?:ok|okay|yes|sure|please|go ahead)[,.! ]+)*"
-    r"apply(?: it| them| that| this| all| the changes?| now| please)*[.!]*"
-)
-
-
-def should_apply_now(text: str, *, has_pending_writes: bool) -> bool:
+def should_apply_now(text: str) -> bool:
     """True when the message should trigger applying queued GitHub writes.
 
-    Only a whole-message confirmation counts — a sentence that merely contains
-    "apply" ("does this rule apply to closed PRs?") never triggers writes.
-    Without queued writes, just the exact `apply it` phrase short-circuits
-    (to show the "nothing pending" hint).
+    The UI and LLM instructions document one exact confirmation phrase. Keep this
+    strict because this path writes to GitHub.
     """
     normalized = " ".join(text.casefold().split())
-    if not _wants_apply(normalized):
-        return False
-    return has_pending_writes or normalized == "apply it"
+    return normalized == "apply it"
 
 
 def _wants_scan(normalized: str) -> bool:
@@ -160,10 +147,6 @@ def _wants_scan(normalized: str) -> bool:
     return bool(
         re.search(r"\brun\b", normalized) and re.search(r"\b(scan|again|table)\b", normalized)
     )
-
-
-def _wants_apply(normalized: str) -> bool:
-    return _CONFIRM_APPLY.fullmatch(normalized) is not None
 
 
 def _wants_explain(normalized: str) -> bool:

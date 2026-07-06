@@ -434,7 +434,9 @@ def fetch_repositories(
     if include_all:
         return fetch_all_repositories(client, org)
     repositories: list[str] = []
-    for name in allowlist:
+    for entry in allowlist:
+        # config accepts bare name or org/name; the query needs the bare name
+        name = entry.split("/")[-1]
         data = client.graphql(REPOSITORY_QUERY, {"org": org, "name": name})
         organization = as_object(data.get("organization"), "organization")
         repository = as_object(organization.get("repository"), f"repository {name}")
@@ -661,7 +663,12 @@ def parse_project_item(raw: JsonObject) -> ProjectItem:
         as_list(raw_values.get("nodes"), "project item fieldValues.nodes")
     )
     if parsed_content is None:
-        content_type = parse_content_type(optional_str(content_object.get("__typename")) or "")
+        # Redacted items come back as content: null with item-level type REDACTED;
+        # they never carry a __typename.
+        if not content and raw.get("type") == "REDACTED":
+            content_type: ProjectContentType = "redacted"
+        else:
+            content_type = parse_content_type(optional_str(content_object.get("__typename")) or "")
         return ProjectItem(
             id=required_str(raw.get("id"), "project item id"),
             content_id=optional_str(content_object.get("id")) if content else None,

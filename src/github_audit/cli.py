@@ -5,14 +5,14 @@ import sys
 from io import TextIOWrapper
 from pathlib import Path
 
-from github_audit.applier import apply_plan, build_apply_plan
+from github_audit.applier import PartialApplyError, apply_plan, build_apply_plan
 from github_audit.browser_scan import BrowserSettings, run_browser_scan
 from github_audit.config import Settings, load_settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import suggest_for_finding
 from github_audit.logging import configure_logging
-from github_audit.models import AuditResult
+from github_audit.models import AuditFinding, AuditResult
 from github_audit.project_fields import search_items
 from github_audit.report import (
     apply_text,
@@ -78,6 +78,9 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         if args.command == "my-work":
             settings = load_settings(my_work_mode=True)
+            if not settings.target_assignees:
+                msg = "TARGET_ASSIGNEES is required for my-work"
+                raise ValueError(msg)
             with GitHubClient(settings.github_token) as client:
                 repos = discover_repositories(client, settings)
                 work = build_my_work(client, settings, repos)
@@ -151,6 +154,16 @@ def main(argv: list[str] | None = None) -> int:
                 )
                 print(apply_text(result))
                 return 0
+    except PartialApplyError as exc:
+        print(f"apply failed partway: {exc}", file=sys.stderr)
+        for change in exc.applied:
+            print(
+                f"  already applied: {change.repository}#{change.number} {change.field_name}",
+                file=sys.stderr,
+            )
+        for note in exc.skipped:
+            print(f"  skipped: {note}", file=sys.stderr)
+        return 2
     except (GitHubError, ValueError) as exc:
         print(str(exc), file=sys.stderr)
         return 2
@@ -162,24 +175,45 @@ def add_suggestions(audit: AuditResult, settings: Settings) -> None:
         finding.llm_suggestion = suggest_for_finding(finding, settings)
 
 
+def _dedupe_rank(finding: AuditFinding) -> tuple[bool, int]:
+    """Prefer the scan of a board the item is actually on, then fewer missing fields."""
+    return (finding.project_item_id is None, len(finding.missing_fields))
+
+
 def merge_audits(audits: list[AuditResult]) -> AuditResult:
+    if not audits:
+        msg = (
+            "no projects discovered; set GITHUB_PROJECT_NUMBERS or GITHUB_INCLUDE_ALL_PROJECTS=true"
+        )
+        raise ValueError(msg)
     if len(audits) == 1:
         return audits[0]
-    findings = [finding for audit in audits for finding in audit.findings]
-    findings.sort(
+    # Every project scan sees the same searched items, so an item on none of the
+    # scanned boards would produce one identical finding per project.
+    best: dict[tuple[str, str, int], AuditFinding] = {}
+    for audit in audits:
+        for finding in audit.findings:
+            key = (finding.repository, finding.item_type, finding.number)
+            existing = best.get(key)
+            if existing is None or _dedupe_rank(finding) < _dedupe_rank(existing):
+                best[key] = finding
+    findings = sorted(
+        best.values(),
         key=lambda item: (
             item.project_number or 0,
             item.repository,
             item.item_type,
             item.number,
-        )
+        ),
     )
     return AuditResult(
         organization=audits[0].organization,
         repositories=sorted({repository for audit in audits for repository in audit.repositories}),
         findings=findings,
-        scanned_issue_count=sum(audit.scanned_issue_count for audit in audits),
-        scanned_pull_request_count=sum(audit.scanned_pull_request_count for audit in audits),
+        # each per-project scan iterates the same search results, so summing
+        # would count every item once per project
+        scanned_issue_count=max(audit.scanned_issue_count for audit in audits),
+        scanned_pull_request_count=max(audit.scanned_pull_request_count for audit in audits),
         limitations=sorted({limitation for audit in audits for limitation in audit.limitations}),
     )
 

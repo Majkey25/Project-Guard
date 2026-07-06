@@ -147,7 +147,9 @@ def test_merge_audits_sorts_findings() -> None:
     assert numbers == sorted(numbers)
 
 
-def test_merge_audits_sums_counts() -> None:
+def test_merge_audits_takes_max_counts() -> None:
+    # each per-project scan iterates the same search results, so summing would
+    # count every item once per project
     a = AuditResult(
         organization="org",
         repositories=[],
@@ -163,5 +165,5 @@ def test_merge_audits_sums_counts() -> None:
         scanned_pull_request_count=2,
     )
     result = merge_audits([a, b])
-    assert result.scanned_issue_count == 8
-    assert result.scanned_pull_request_count == 3
+    assert result.scanned_issue_count == 5
+    assert result.scanned_pull_request_count == 2

@@ -12,7 +12,12 @@ import xlsxwriter  # pyright: ignore[reportMissingTypeStubs]  # typed inline, py
 from pydantic import ValidationError
 
 from github_audit.agent_chat import parse_agent_command, should_apply_now, summarize_findings
-from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
+from github_audit.applier import (
+    PartialApplyError,
+    apply_pending_write,
+    describe_pending_write,
+    resolve_created_item_ids,
+)
 from github_audit.config import Settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
@@ -95,7 +100,10 @@ def _date_env(value: str) -> date | None:
         return None
 
 
-def _date_from_widget(value: object) -> date:
+def _date_from_widget(value: object) -> date | None:
+    # st.date_input returns None when the user clears the field
+    if value is None:
+        return None
     if isinstance(value, datetime):
         return value.date()
     if isinstance(value, date):
@@ -127,7 +135,9 @@ _XLSX_HEADERS = {
 def _xlsx_bytes(rows: list[FindingRow]) -> bytes:
     fields = list(FindingRow.__annotations__)
     buf = io.BytesIO()
-    with xlsxwriter.Workbook(buf, {"in_memory": True}) as book:
+    # strings_to_formulas=False: issue titles are repo-controlled text; a title like
+    # =HYPERLINK(...) must land as a string, not an executable formula.
+    with xlsxwriter.Workbook(buf, {"in_memory": True, "strings_to_formulas": False}) as book:
         sheet = book.add_worksheet("Findings")  # pyright: ignore[reportUnknownMemberType]
         # Excel Table = per-column filter dropdowns + banded rows out of the box.
         # Table range needs at least one data row, even when there are no findings.
@@ -170,6 +180,9 @@ def _write_env_keys(updates: dict[str, str]) -> None:
     for v in updates.values():
         if "\n" in v or "\r" in v:
             msg = "env value must not contain newlines"
+            raise ValueError(msg)
+        if '"' in v or "\\" in v:
+            msg = "env value must not contain quotes or backslashes"
             raise ValueError(msg)
     path = _ENV_PATH
     lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
@@ -302,9 +315,13 @@ with st.sidebar:
             disabled=not req_board,
             help="Off (default): only issues must be on the board — PRs are exempt.",
         )
+        # "none" is the explicit off-sentinel ("" would fall back to the config default)
+        _required_env = E.get("REQUIRED_PROJECT_FIELDS", "")
+        if _required_env.strip().casefold() == "none":
+            _required_env = ""
         require_fields = st.checkbox(
             "Missing required project fields",
-            value=bool(_csv(E.get("REQUIRED_PROJECT_FIELDS", ""))),
+            value=bool(_csv(_required_env)),
             help=(
                 "Flag items that are missing one or more of the required Project V2 "
                 "custom fields listed below."
@@ -312,7 +329,7 @@ with st.sidebar:
         )
         required_fields = st.text_area(
             "Required Project fields",
-            value=E.get("REQUIRED_PROJECT_FIELDS", ""),
+            value=_required_env,
             disabled=not require_fields,
             placeholder="Estimate\nIteration (sprint)\nPriority\nDifficulty\nStatus",
             help=(
@@ -524,7 +541,9 @@ with st.sidebar:
                 "GITHUB_PROJECT_NUMBERS": _project_numbers(project_numbers),
                 "REQUIRE_PROJECT_ITEM": "true" if req_board else "false",
                 "REQUIRE_PROJECT_ITEM_PULL_REQUESTS": "true" if req_board_prs else "false",
-                "REQUIRED_PROJECT_FIELDS": _csv(required_fields) if require_fields else "",
+                # "none" because env_ignore_empty would turn "" back into the default
+                "REQUIRED_PROJECT_FIELDS": (_csv(required_fields) if require_fields else "")
+                or "none",
                 "REQUIRE_ASSIGNEE": "true" if require_assignee else "false",
                 "REQUIRE_DEVELOPMENT_LINK": "true" if require_dev else "false",
                 "REQUIRE_LINKED_PR_OR_BRANCH": "true" if require_pr_branch else "false",
@@ -575,6 +594,15 @@ with st.sidebar:
 
 
 # ── scan logic ────────────────────────────────────────────────────────────────
+def _clear_scan_results() -> None:
+    """Drop scan-derived state so a failed rescan can't leave stale findings
+    addressable by the write agent."""
+    for key in ("rows", "stats", "scan_time", "findings"):
+        st.session_state[key] = None
+    st.session_state.project_ids_by_number = None
+    st.session_state.project_fields_by_number = None
+
+
 def _run_scan() -> None:
     try:
         settings = Settings.model_validate(
@@ -611,9 +639,11 @@ def _run_scan() -> None:
     except ValidationError as exc:
         msgs = "; ".join(e["msg"] for e in exc.errors())
         st.session_state.error = f"Configuration error: {msgs}"
+        _clear_scan_results()
         return
     except ValueError as exc:
         st.session_state.error = str(exc)
+        _clear_scan_results()
         return
 
     try:
@@ -635,16 +665,20 @@ def _run_scan() -> None:
             results = scan_all(client, settings, discoveries, searched_items)
     except GitHubError as exc:
         st.session_state.error = str(exc)
+        # stale findings must not stay addressable by the write agent after a failed scan
+        _clear_scan_results()
         return
 
     rows: list[FindingRow] = []
-    issues = prs = 0
+    # each per-project scan iterates the same search results, so summing the
+    # per-scan counts would count every item once per project
+    issues = max((r.scanned_issue_count for r in results), default=0)
+    prs = max((r.scanned_pull_request_count for r in results), default=0)
     # key → (FindingRow, AuditFinding) — deduplicate across project scans,
-    # keeping the version with the fewest missing fields (item may be on project A but not B)
+    # preferring the scan of a board the item is actually on, then fewest missing
+    # fields (item may be on project A but not B)
     best: dict[tuple[str, str, int], tuple[FindingRow, AuditFinding]] = {}
     for r in results:
-        issues += r.scanned_issue_count
-        prs += r.scanned_pull_request_count
         for f in r.findings:
             row: FindingRow = {
                 "project": f.project_number or 0,
@@ -660,10 +694,11 @@ def _run_scan() -> None:
             }
             key = (row["repository"], row["item_type"], row["number"])
             existing = best.get(key)
-            existing_missing_count = (
-                len(existing[0]["missing_fields"].split(",")) if existing else None
-            )
-            if existing_missing_count is None or len(f.missing_fields) < existing_missing_count:
+            rank = (f.project_item_id is None, len(f.missing_fields))
+            if existing is None or rank < (
+                existing[1].project_item_id is None,
+                len(existing[1].missing_fields),
+            ):
                 best[key] = (row, f)
 
     rows = [v[0] for v in best.values()]
@@ -704,8 +739,7 @@ def _scan_request_error() -> str | None:
 
 
 if scan_btn:
-    for key in ("rows", "stats", "scan_time"):
-        st.session_state[key] = None
+    _clear_scan_results()
     st.session_state.limitations = list[str]()
     scan_error = _scan_request_error()
     if scan_error:
@@ -803,6 +837,9 @@ def _pending_apply_reply() -> str:
                 )
             except PartialApplyError as exc:
                 remaining = _trim_partial_apply(write, exc, pending_writes[index + 1 :])
+                # keep the retry queue self-contained: adds already consumed can no
+                # longer resolve empty project item ids on the next run
+                resolve_created_item_ids(remaining, created_item_ids)
                 st.session_state.agent_pending_writes = remaining
                 return (
                     f"Applied {applied} write(s) fully, then failed on write {index + 1}"
@@ -811,6 +848,7 @@ def _pending_apply_reply() -> str:
                 )
             except (GitHubError, ValueError) as exc:
                 remaining = pending_writes[index:]
+                resolve_created_item_ids(remaining, created_item_ids)
                 st.session_state.agent_pending_writes = remaining
                 return (
                     f"Applied {applied} write(s), then failed on write {index + 1}: {exc}."
@@ -851,8 +889,26 @@ def _agent_reply(
     command = parse_agent_command(prompt)
     replies: list[str] = []
 
+    findings_store = cast(
+        dict[tuple[str, str, int], AuditFinding],
+        st.session_state.findings or {},
+    )
     has_pending = bool(st.session_state.agent_pending_writes)
-    if should_apply_now(prompt, has_pending_writes=has_pending):
+    if should_apply_now(prompt):
+        # The queued writes belong to one item; confirming while a different item
+        # is selected must never write to the previously selected one.
+        selected = findings_store.get(selected_key) if selected_key else None
+        pending_content_id = cast(str | None, st.session_state.agent_pending_content_id)
+        if has_pending and selected is not None and selected.content_id != pending_content_id:
+            count = len(cast(list[PendingWrite], st.session_state.agent_pending_writes))
+            st.session_state.agent_pending_writes = []
+            st.session_state.agent_pending_project_id = None
+            st.session_state.agent_pending_fields = None
+            st.session_state.agent_pending_content_id = None
+            return (
+                f"Discarded {count} queued write(s) because you switched items."
+                " Nothing was applied. Ask again on the currently selected item."
+            )
         return _pending_apply_reply()
 
     pending_controls = cast(
@@ -869,10 +925,6 @@ def _agent_reply(
         st.session_state.agent_pending_scan = True
         replies.append("Scan queued.")
 
-    findings_store = cast(
-        dict[tuple[str, str, int], AuditFinding],
-        st.session_state.findings or {},
-    )
     selected_finding = findings_store.get(selected_key) if selected_key else None
     if selected_finding is None:
         # Let "add estimate 5 to #123"-style prompts work without the dropdown.
@@ -938,7 +990,11 @@ def _agent_reply(
             try:
                 from pydantic_ai.messages import ModelMessage
 
-                from github_audit.llm_evaluator import general_chat, project_agent_chat
+                from github_audit.llm_evaluator import (
+                    general_chat,
+                    project_agent_chat,
+                    trim_message_history,
+                )
 
                 ctx_parts = [
                     summarize_findings(
@@ -1005,9 +1061,9 @@ def _agent_reply(
                         existing_writes=pending_writes,
                         message_history=stored_history,
                     )
-                    st.session_state.chat_message_history = (
-                        stored_history + agent_result.new_messages
-                    )[-20:]
+                    st.session_state.chat_message_history = trim_message_history(
+                        stored_history + agent_result.new_messages, 20
+                    )
                     replies.append(agent_result.reply + discarded_notice)
                     preview: list[str] = []
                     if agent_result.pending_writes:
@@ -1036,8 +1092,11 @@ def _agent_reply(
                     _llm_settings(),
                     message_history=stored_history,
                 )
-                # Keep last 20 messages to bound context size.
-                st.session_state.chat_message_history = (stored_history + new_msgs)[-20:]
+                # Keep last ~20 messages to bound context size (trimmed at run
+                # boundaries so tool calls stay paired with their returns).
+                st.session_state.chat_message_history = trim_message_history(
+                    stored_history + new_msgs, 20
+                )
                 return reply
             except Exception as exc:
                 replies.append(f"AI error: {exc}")
@@ -1230,9 +1289,13 @@ filtered: list[FindingRow] = []
 for row in rows:
     if sel_repos and row["repository"] not in sel_repos:
         continue
-    if sel_missing and not any(f in row["missing_fields"] for f in sel_missing):
+    # exact membership, not substring: "assignee" must not match "target assignee",
+    # login "jan" must not match "janedoe"
+    row_missing = {part.strip() for part in row["missing_fields"].split(",")}
+    if sel_missing and not any(f in row_missing for f in sel_missing):
         continue
-    if sel_assignees and not any(a in row["assignees"] for a in sel_assignees):
+    row_assignees = {part.strip() for part in row["assignees"].split(",")}
+    if sel_assignees and not any(a in row_assignees for a in sel_assignees):
         continue
     if sel_types and row["item_type"] not in sel_types:
         continue

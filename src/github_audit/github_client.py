@@ -77,7 +77,16 @@ class GitHubClient:
         payload: JsonObject = {"query": query, "variables": dict(variables or {})}
         for attempt in range(_MAX_ATTEMPTS):
             is_last = attempt == _MAX_ATTEMPTS - 1
-            response = self._client.post(GITHUB_GRAPHQL_URL, json=payload)
+            try:
+                response = self._client.post(GITHUB_GRAPHQL_URL, json=payload)
+            except httpx.HTTPError as exc:
+                # Transport failures (timeout, connection reset) are transient like a 502;
+                # they must never escape as raw httpx errors - callers rely on GitHubError.
+                if not is_last:
+                    time.sleep(min(float(2**attempt), _MAX_BACKOFF_SECONDS))
+                    continue
+                msg = f"GitHub request failed: {exc}"
+                raise GitHubError(msg) from exc
             retryable = response.status_code in _RETRYABLE_STATUSES and not is_last
             if retryable and (response.status_code != 403 or _looks_rate_limited(response)):
                 time.sleep(min(_retry_delay(response, attempt), _MAX_BACKOFF_SECONDS))
@@ -85,7 +94,11 @@ class GitHubClient:
             if response.status_code >= 400:
                 msg = f"GitHub API returned HTTP {response.status_code}"
                 raise GitHubError(msg)
-            raw = response.json()
+            try:
+                raw = response.json()
+            except ValueError as exc:
+                msg = "GitHub returned invalid JSON"
+                raise GitHubError(msg) from exc
             if not isinstance(raw, dict):
                 msg = "GitHub GraphQL returned non-object JSON"
                 raise GitHubError(msg)

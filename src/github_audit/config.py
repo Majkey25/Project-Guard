@@ -267,6 +267,10 @@ class Settings(BaseSettings):
 
     @property
     def required_project_fields(self) -> list[str]:
+        # env_ignore_empty makes "" fall back to the default, so "no required
+        # fields" needs an explicit sentinel the dashboard can write to .env.
+        if self.required_project_fields_raw.strip().casefold() == "none":
+            return []
         return split_csv(self.required_project_fields_raw)
 
     @property
@@ -299,6 +303,7 @@ class Settings(BaseSettings):
 def load_settings(*, my_work_mode: bool = False) -> Settings:
     import os
 
+    previous = os.environ.get("MY_WORK_MODE")
     if my_work_mode:
         os.environ["MY_WORK_MODE"] = "true"
     try:
@@ -309,4 +314,7 @@ def load_settings(*, my_work_mode: bool = False) -> Settings:
         raise ValueError(msg) from exc
     finally:
         if my_work_mode:
-            os.environ.pop("MY_WORK_MODE", None)
+            if previous is None:
+                os.environ.pop("MY_WORK_MODE", None)
+            else:
+                os.environ["MY_WORK_MODE"] = previous

@@ -13,10 +13,6 @@ from github_audit.project_fields import (
 )
 
 
-def discover(client: GitHubClient, settings: Settings) -> DiscoveryResult:
-    return discover_all(client, settings)[0]
-
-
 def discover_all(
     client: GitHubClient,
     settings: Settings,
@@ -36,6 +32,8 @@ def discover_all(
             include_issues=settings.include_issues,
             include_pull_requests=settings.include_pull_requests,
             include_closed_issues=settings.include_closed_issues,
+            include_closed_pull_requests=settings.include_closed_pull_requests,
+            include_unassigned=settings.include_unassigned,
         )
     )
     issue_sample_count = sum(isinstance(item, GitHubIssue) for item in samples)
@@ -72,7 +70,8 @@ def discover_repositories(client: GitHubClient, settings: Settings) -> list[str]
         settings.repository_allowlist,
         settings.github_include_all_repositories,
     )
-    denylist = set(settings.repository_denylist)
+    # config accepts bare name or org/name; compare bare names either way
+    denylist = {entry.split("/")[-1] for entry in settings.repository_denylist}
     return [
         repository for repository in repositories if repository.split("/", 1)[1] not in denylist
     ]
@@ -90,9 +89,9 @@ def discover_project(
 ) -> DiscoveryResult:
     project, fields = fetch_project_fields(client, settings.github_org, project_number)
     project_items = fetch_project_items(client, settings.github_org, project_number)
-    field_names = {field.name for field in fields}
+    field_names = {field.name.casefold() for field in fields}
     required_missing = [
-        name for name in settings.required_project_fields if name not in field_names
+        name for name in settings.required_project_fields if name.casefold() not in field_names
     ]
     limitations: list[str] = []
     if not branch_available:

@@ -18,6 +18,10 @@ from github_audit.models import (
     MyWorkResult,
 )
 
+_CSV_FORMULA_PREFIXES = frozenset(
+    ("=", "+", "-", "@", "\t", "\r", "\n", "\uff1d", "\uff0b", "\uff0d", "\uff20")
+)
+
 
 def _hr(char: str = "-", width: int = 60) -> str:
     return char * width
@@ -162,8 +166,14 @@ def write_discovery_markdown(path: Path, discovery: DiscoveryResult) -> None:
     )
 
 
+def _excel_safe(value: str) -> str:
+    """Neutralize CSV formula injection at export time."""
+    return f"'{value}" if value[:1] in _CSV_FORMULA_PREFIXES else value
+
+
 def write_csv(path: Path, audit: AuditResult) -> None:
-    with path.open("w", newline="", encoding="utf-8") as file:
+    # utf-8-sig: without the BOM, Excel on Czech Windows decodes diacritics as ANSI
+    with path.open("w", newline="", encoding="utf-8-sig") as file:
         writer = csv.DictWriter(
             file,
             fieldnames=[
@@ -183,16 +193,16 @@ def write_csv(path: Path, audit: AuditResult) -> None:
         for finding in audit.findings:
             writer.writerow(
                 {
-                    "repository": finding.repository,
-                    "item_type": finding.item_type,
+                    "repository": _excel_safe(finding.repository),
+                    "item_type": _excel_safe(finding.item_type),
                     "number": finding.number,
-                    "title": finding.title,
-                    "url": str(finding.url),
-                    "updated_at": finding.updated_at or "",
-                    "assignees": ",".join(finding.assignees),
-                    "missing_fields": ",".join(finding.missing_fields),
-                    "development_status": finding.development_status,
-                    "apply_status": finding.apply_status,
+                    "title": _excel_safe(finding.title),
+                    "url": _excel_safe(str(finding.url)),
+                    "updated_at": _excel_safe(finding.updated_at or ""),
+                    "assignees": _excel_safe(",".join(finding.assignees)),
+                    "missing_fields": _excel_safe(",".join(finding.missing_fields)),
+                    "development_status": _excel_safe(finding.development_status),
+                    "apply_status": _excel_safe(finding.apply_status),
                 }
             )
 

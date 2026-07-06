@@ -10,11 +10,21 @@ from typing import TYPE_CHECKING
 from uuid import uuid4
 
 from github_audit.agent_chat import should_apply_now
-from github_audit.applier import PartialApplyError, apply_pending_write, describe_pending_write
+from github_audit.applier import (
+    PartialApplyError,
+    apply_pending_write,
+    describe_pending_write,
+    resolve_created_item_ids,
+)
 from github_audit.config import Settings, load_settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
-from github_audit.llm_evaluator import general_chat, general_chat_stream, project_agent_chat
+from github_audit.llm_evaluator import (
+    general_chat,
+    general_chat_stream,
+    project_agent_chat,
+    trim_message_history,
+)
 from github_audit.models import (
     AddToProjectPlan,
     ApplyPlan,
@@ -172,7 +182,22 @@ class ProjectGuardChatService:
             raise ChatInputError("message is empty")
         settings = load_settings()
         session_id, state = self._sessions.get(conversation_id)
-        if should_apply_now(message, has_pending_writes=bool(state.pending_writes)):
+        if should_apply_now(message):
+            if context and state.pending_writes:
+                # The queued writes belong to one item; confirming while a different
+                # item is selected must never write to the previously selected one.
+                finding = self._scan_snapshot(settings).findings.get(context)
+                if finding is None or finding.content_id != state.pending_content_id:
+                    count = len(state.pending_writes)
+                    state.pending_writes = []
+                    state.pending_project_id = None
+                    state.pending_fields = None
+                    state.pending_content_id = None
+                    return ChatResult(
+                        session_id,
+                        f"Discarded {count} queued write(s) because you switched items."
+                        " Nothing was applied. Ask again on the currently selected item.",
+                    )
             return ChatResult(session_id, self._apply_pending(settings, state))
 
         snapshot = self._scan_snapshot(settings)
@@ -181,9 +206,15 @@ class ProjectGuardChatService:
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
         reply, new_messages = general_chat(
-            message, snapshot.context, settings, message_history=state.message_history
+            message,
+            snapshot.context,
+            settings,
+            message_history=state.message_history,
+            in_tool_commands=False,
         )
-        state.message_history = (state.message_history + new_messages)[-_MAX_HISTORY_MESSAGES:]
+        state.message_history = trim_message_history(
+            state.message_history + new_messages, _MAX_HISTORY_MESSAGES
+        )
         return ChatResult(session_id, reply)
 
     def stream(
@@ -195,16 +226,29 @@ class ProjectGuardChatService:
         message = message.strip()
         if not message:
             raise ChatInputError("message is empty")
-        session_id, state = self._sessions.get(conversation_id)
-        if context or should_apply_now(message, has_pending_writes=bool(state.pending_writes)):
+        if context:
             return None
+        if conversation_id is None:
+            # a brand-new conversation cannot have queued writes; don't create a
+            # session here or the reply() fallback would create a second, orphaned one
+            if should_apply_now(message):
+                return None
+            session_id, state = self._sessions.get(None)
+        else:
+            session_id, state = self._sessions.get(conversation_id)
+            if should_apply_now(message):
+                return None
         settings = load_settings()
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
         snapshot = self._scan_snapshot(settings)
         chunks: list[str] = []
         token_iter, get_new_messages = general_chat_stream(
-            message, snapshot.context, settings, message_history=state.message_history
+            message,
+            snapshot.context,
+            settings,
+            message_history=state.message_history,
+            in_tool_commands=False,
         )
 
         def tokens() -> Iterator[str]:
@@ -214,7 +258,9 @@ class ProjectGuardChatService:
 
         def finalise() -> ChatResult:
             new_messages = get_new_messages()
-            state.message_history = (state.message_history + new_messages)[-_MAX_HISTORY_MESSAGES:]
+            state.message_history = trim_message_history(
+                state.message_history + new_messages, _MAX_HISTORY_MESSAGES
+            )
             return ChatResult(session_id, "".join(chunks))
 
         return tokens(), finalise
@@ -268,9 +314,9 @@ class ProjectGuardChatService:
             existing_writes=state.pending_writes,
             message_history=state.message_history,
         )
-        state.message_history = (state.message_history + result.new_messages)[
-            -_MAX_HISTORY_MESSAGES:
-        ]
+        state.message_history = trim_message_history(
+            state.message_history + result.new_messages, _MAX_HISTORY_MESSAGES
+        )
         preview: list[str] = []
         if result.pending_writes:
             state.pending_writes = result.pending_writes
@@ -317,6 +363,9 @@ class ProjectGuardChatService:
                     state.pending_writes = _trim_partial_apply(
                         write, exc, state.pending_writes[index + 1 :]
                     )
+                    # keep the retry queue self-contained: adds already consumed
+                    # can no longer resolve empty project item ids on the next run
+                    resolve_created_item_ids(state.pending_writes, created_item_ids)
                     self._clear_snapshot()
                     return (
                         f"Applied {applied} write(s) fully, then failed on write {index + 1}"
@@ -326,6 +375,7 @@ class ProjectGuardChatService:
                     )
                 except (GitHubError, ValueError) as exc:
                     state.pending_writes = state.pending_writes[index:]
+                    resolve_created_item_ids(state.pending_writes, created_item_ids)
                     self._clear_snapshot()
                     return (
                         f"Applied {applied} write(s), then failed on write {index + 1}: {exc}."

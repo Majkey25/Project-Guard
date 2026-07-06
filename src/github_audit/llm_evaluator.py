@@ -160,9 +160,34 @@ You are an AI assistant embedded in Project Guard, a GitHub project audit tool.
 Answer questions about the scan data shown in context. Be direct and concise (1-3 sentences).
 Only reference what is visible in the scan results. Do NOT tell the user to go do things
 manually in GitHub — if something cannot be done from this tool, say so in one sentence and stop.
-Available in-tool commands: `explain`, Project field updates on a selected item, comments,
-and `run scan`.
 """
+
+# Only the Streamlit dashboard parses these commands; the API service must not
+# advertise them.
+_CHAT_COMMANDS_NOTE = (
+    "Available in-tool commands: `explain`, Project field updates on a selected item, "
+    "comments, and `run scan`.\n"
+)
+
+
+def trim_message_history(messages: list[ModelMessage], limit: int) -> list[ModelMessage]:
+    """Trim to at most `limit` messages, cutting only at a run boundary (a request
+    carrying the user prompt). A fixed slice can separate a tool call from its tool
+    return, and OpenAI/Azure reject any history that starts with an orphaned tool
+    response — permanently, since the broken history would be replayed every turn.
+    """
+    if len(messages) <= limit:
+        return messages
+    from pydantic_ai.messages import ModelRequest, UserPromptPart
+
+    window = messages[-limit:]
+    for index, message in enumerate(window):
+        if isinstance(message, ModelRequest) and any(
+            isinstance(part, UserPromptPart) for part in message.parts
+        ):
+            return window[index:]
+    return []  # no clean boundary inside the window; fresh start beats a broken history
+
 
 _PROJECT_AGENT_INSTRUCTIONS = """
 You are the Project Guard assistant. Use tools to inspect the selected GitHub issue or PR and to
@@ -316,9 +341,11 @@ def general_chat(
     settings: Settings,
     *,
     message_history: list[ModelMessage] | None = None,
+    in_tool_commands: bool = True,
 ) -> tuple[str, list[ModelMessage]]:
     """Return (reply, new_messages) for multi-turn conversation support."""
-    agent = _make_agent(settings, _ChatReply, _CHAT_INSTRUCTIONS)
+    instructions = _CHAT_INSTRUCTIONS + (_CHAT_COMMANDS_NOTE if in_tool_commands else "")
+    agent = _make_agent(settings, _ChatReply, instructions)
     full_prompt = f"{context}\n\nUser: {prompt}"
     result = _run_agent_sync(
         lambda: agent.run_sync(full_prompt, message_history=message_history or []),
@@ -333,15 +360,15 @@ def general_chat_stream(
     settings: Settings,
     *,
     message_history: list[ModelMessage] | None = None,
+    in_tool_commands: bool = True,
 ) -> tuple[Iterator[str], Callable[[], list[ModelMessage]]]:
     """Return (token stream, get_new_messages). Call get_new_messages() after exhausting tokens."""
     settings.validate_llm()
     from pydantic_ai import Agent
 
-    key = _cache_key(settings, f"agent_stream:{_CHAT_INSTRUCTIONS}")
-    agent = _cached_agent(
-        key, lambda: Agent(_make_model(settings), instructions=_CHAT_INSTRUCTIONS)
-    )
+    instructions = _CHAT_INSTRUCTIONS + (_CHAT_COMMANDS_NOTE if in_tool_commands else "")
+    key = _cache_key(settings, f"agent_stream:{instructions}")
+    agent = _cached_agent(key, lambda: Agent(_make_model(settings), instructions=instructions))
     full_prompt = f"{context}\n\nUser: {prompt}"
     _logger.debug("┌─ LLM chat_stream")
     result = agent.run_stream_sync(full_prompt, message_history=message_history or [])

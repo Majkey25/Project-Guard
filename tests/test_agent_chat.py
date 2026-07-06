@@ -55,45 +55,38 @@ def test_parse_does_not_hardcode_field_updates() -> None:
     command = parse_agent_command("complete the estimate space with value 20")
     assert not command.control_updates
     assert command.run_scan is False
-    assert command.apply_pending is False
     assert command.explain is False
 
 
-def test_parse_apply_matches_natural_confirmations() -> None:
-    assert parse_agent_command("apply it").apply_pending is True
-    assert parse_agent_command("apply").apply_pending is True
-    assert parse_agent_command("yes, apply the changes").apply_pending is True
-    assert parse_agent_command("do it").apply_pending is False
-    assert parse_agent_command("confirm").apply_pending is False
-
-
-def test_should_apply_now_needs_pending_writes_unless_exact_phrase() -> None:
-    assert should_apply_now("apply the changes", has_pending_writes=True) is True
-    assert should_apply_now("Apply it!", has_pending_writes=True) is True
-    assert should_apply_now("apply the changes", has_pending_writes=False) is False
-    assert should_apply_now("apply it", has_pending_writes=False) is True
-    assert should_apply_now("set estimate to 5", has_pending_writes=True) is False
+def test_should_apply_now_requires_exact_phrase() -> None:
+    assert should_apply_now("apply it") is True
+    assert should_apply_now("apply") is False
+    assert should_apply_now("Apply it!") is False
+    assert should_apply_now("apply the changes") is False
+    assert should_apply_now("yes, apply the changes") is False
+    assert should_apply_now("do it") is False
+    assert should_apply_now("confirm") is False
+    assert should_apply_now("set estimate to 5") is False
 
 
 def test_should_apply_now_treats_new_write_requests_as_agent_prompts() -> None:
     # Naming a write target means a NEW request, not a confirmation of queued writes.
-    assert should_apply_now("now apply the bug label", has_pending_writes=True) is False
-    assert should_apply_now("apply estimate 5 too", has_pending_writes=True) is False
-    assert should_apply_now("apply a comment about the delay", has_pending_writes=True) is False
+    assert should_apply_now("now apply the bug label") is False
+    assert should_apply_now("apply estimate 5 too") is False
+    assert should_apply_now("apply a comment about the delay") is False
     # ...but the canonical phrase always confirms.
-    assert should_apply_now("apply it", has_pending_writes=True) is True
+    assert should_apply_now("apply it") is True
 
 
 def test_should_apply_now_never_fires_on_questions_containing_apply() -> None:
     # A question mentioning "apply" must never execute queued GitHub writes.
-    assert should_apply_now("does this rule apply to closed PRs?", has_pending_writes=True) is False
-    assert should_apply_now("can I apply a filter to the table?", has_pending_writes=True) is False
-    assert should_apply_now("how do I apply for access?", has_pending_writes=True) is False
-    assert should_apply_now("apply sprint 3 as well", has_pending_writes=True) is False
-    assert should_apply_now("apply the same change to #124", has_pending_writes=True) is False
-    # Confirmation shapes still work.
-    assert should_apply_now("ok apply it now", has_pending_writes=True) is True
-    assert should_apply_now("yes, apply the changes", has_pending_writes=True) is True
+    assert should_apply_now("does this rule apply to closed PRs?") is False
+    assert should_apply_now("can I apply a filter to the table?") is False
+    assert should_apply_now("how do I apply for access?") is False
+    assert should_apply_now("apply sprint 3 as well") is False
+    assert should_apply_now("apply the same change to #124") is False
+    assert should_apply_now("ok apply it now") is False
+    assert should_apply_now("yes, apply the changes") is False
 
 
 def test_parse_scan_ignores_run_inside_words_and_field_requests() -> None:

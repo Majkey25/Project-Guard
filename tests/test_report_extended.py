@@ -245,7 +245,9 @@ def test_write_markdown_groups_by_repo(tmp_path: Path) -> None:
 def test_write_csv_creates_valid_csv(tmp_path: Path) -> None:
     out = tmp_path / "report.csv"
     write_csv(out, _audit())
-    with out.open(encoding="utf-8") as f:
+    # utf-8-sig: the BOM keeps Czech diacritics readable when Excel opens the file
+    assert out.read_bytes().startswith(b"\xef\xbb\xbf")
+    with out.open(encoding="utf-8-sig") as f:
         reader = csv.DictReader(f)
         rows = list(reader)
     assert len(rows) == 2

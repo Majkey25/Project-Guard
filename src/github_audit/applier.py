@@ -133,6 +133,24 @@ class PartialApplyError(RuntimeError):
         self.cause = cause
 
 
+def resolve_created_item_ids(writes: list[PendingWrite], created_item_ids: dict[str, str]) -> None:
+    """Fill project item ids resolved by board adds that already succeeded.
+
+    A retried queue no longer contains the consumed AddToProjectPlan, so field
+    changes queued with an empty project_item_id could never resolve again and
+    every retry would fail with "not on the project board".
+    """
+    if not created_item_ids:
+        return
+    for write in writes:
+        if isinstance(write, ApplyPlan):
+            for change in write.changes:
+                if not change.project_item_id and change.content_id:
+                    item_id = created_item_ids.get(change.content_id)
+                    if item_id:
+                        change.project_item_id = item_id
+
+
 def build_apply_plan(
     audit: AuditResult,
     fields: list[ProjectFieldDefinition],
