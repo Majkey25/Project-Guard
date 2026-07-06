@@ -28,16 +28,7 @@ def scan_all(
     if not discoveries:
         return []
     if searched_items is None:
-        searched_items = search_items(
-            client,
-            discoveries[0].repositories,
-            settings.target_assignees,
-            include_issues=settings.include_issues,
-            include_pull_requests=settings.include_pull_requests,
-            include_closed_issues=settings.include_closed_issues,
-            include_closed_pull_requests=settings.include_closed_pull_requests,
-            include_unassigned=settings.include_unassigned,
-        )
+        searched_items = _search_items(client, settings, discoveries[0].repositories)
     project_items_by_number: dict[int, list[ProjectItem]] = {}
     known_project_content_ids: set[str] | None = None
     if settings.require_project_item and len(discoveries) > 1:
@@ -89,16 +80,7 @@ def scan(
         if content is not None:
             content_by_id[content.id] = content
     if searched_items is None:
-        searched_items = search_items(
-            client,
-            discovery.repositories,
-            settings.target_assignees,
-            include_issues=settings.include_issues,
-            include_pull_requests=settings.include_pull_requests,
-            include_closed_issues=settings.include_closed_issues,
-            include_closed_pull_requests=settings.include_closed_pull_requests,
-            include_unassigned=settings.include_unassigned,
-        )
+        searched_items = _search_items(client, settings, discovery.repositories)
     for item in searched_items:
         content_by_id[item.id] = item
 
@@ -138,6 +120,21 @@ def scan(
         scanned_issue_count=issue_count,
         scanned_pull_request_count=pull_request_count,
         limitations=discovery.development_limitations,
+    )
+
+
+def _search_items(
+    client: GitHubClient, settings: Settings, repositories: list[str]
+) -> list[GitHubContent]:
+    return search_items(
+        client,
+        repositories,
+        settings.target_assignees,
+        include_issues=settings.include_issues,
+        include_pull_requests=settings.include_pull_requests,
+        include_closed_issues=settings.include_closed_issues,
+        include_closed_pull_requests=settings.include_closed_pull_requests,
+        include_unassigned=settings.include_unassigned,
     )
 
 

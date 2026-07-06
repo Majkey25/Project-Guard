@@ -60,33 +60,25 @@ def test_parse_does_not_hardcode_field_updates() -> None:
 
 def test_should_apply_now_requires_exact_phrase() -> None:
     assert should_apply_now("apply it") is True
-    assert should_apply_now("apply") is False
-    assert should_apply_now("Apply it!") is False
-    assert should_apply_now("apply the changes") is False
-    assert should_apply_now("yes, apply the changes") is False
-    assert should_apply_now("do it") is False
-    assert should_apply_now("confirm") is False
-    assert should_apply_now("set estimate to 5") is False
-
-
-def test_should_apply_now_treats_new_write_requests_as_agent_prompts() -> None:
-    # Naming a write target means a NEW request, not a confirmation of queued writes.
-    assert should_apply_now("now apply the bug label") is False
-    assert should_apply_now("apply estimate 5 too") is False
-    assert should_apply_now("apply a comment about the delay") is False
-    # ...but the canonical phrase always confirms.
-    assert should_apply_now("apply it") is True
-
-
-def test_should_apply_now_never_fires_on_questions_containing_apply() -> None:
-    # A question mentioning "apply" must never execute queued GitHub writes.
-    assert should_apply_now("does this rule apply to closed PRs?") is False
-    assert should_apply_now("can I apply a filter to the table?") is False
-    assert should_apply_now("how do I apply for access?") is False
-    assert should_apply_now("apply sprint 3 as well") is False
-    assert should_apply_now("apply the same change to #124") is False
-    assert should_apply_now("ok apply it now") is False
-    assert should_apply_now("yes, apply the changes") is False
+    for text in (
+        "apply",
+        "Apply it!",
+        "apply the changes",
+        "yes, apply the changes",
+        "do it",
+        "confirm",
+        "set estimate to 5",
+        "now apply the bug label",
+        "apply estimate 5 too",
+        "apply a comment about the delay",
+        "does this rule apply to closed PRs?",
+        "can I apply a filter to the table?",
+        "how do I apply for access?",
+        "apply sprint 3 as well",
+        "apply the same change to #124",
+        "ok apply it now",
+    ):
+        assert should_apply_now(text) is False
 
 
 def test_parse_scan_ignores_run_inside_words_and_field_requests() -> None:

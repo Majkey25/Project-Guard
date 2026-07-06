@@ -1,8 +1,3 @@
-"""Regression tests for the 2026-07 whole-project audit fixes.
-
-Each test pins one previously confirmed bug; see the test names for the defect.
-"""
-
 from __future__ import annotations
 
 import os
@@ -76,9 +71,6 @@ def _audit(findings: list[AuditFinding], **counts: int) -> AuditResult:
     )
 
 
-# ── github_client: transport/JSON failures must surface as GitHubError ────────
-
-
 def _ok_response(body: object) -> MagicMock:
     response = MagicMock()
     response.status_code = 200
@@ -86,7 +78,7 @@ def _ok_response(body: object) -> MagicMock:
     return response
 
 
-def test_graphql_wraps_transport_error_as_github_error() -> None:
+def test_graphql_transport_and_json_edges() -> None:
     instance = MagicMock()
     instance.post.side_effect = httpx.ConnectError("connection refused")
     with (
@@ -96,8 +88,6 @@ def test_graphql_wraps_transport_error_as_github_error() -> None:
     ):
         GitHubClient("tok").graphql("query {}")
 
-
-def test_graphql_retries_transport_error_then_succeeds() -> None:
     instance = MagicMock()
     instance.post.side_effect = [
         httpx.ReadTimeout("timed out"),
@@ -110,8 +100,6 @@ def test_graphql_retries_transport_error_then_succeeds() -> None:
         assert GitHubClient("tok").graphql("query {}") == {"ok": True}
     assert instance.post.call_count == 2
 
-
-def test_graphql_invalid_json_raises_github_error() -> None:
     response = MagicMock()
     response.status_code = 200
     response.json.side_effect = ValueError("not json")
@@ -124,10 +112,7 @@ def test_graphql_invalid_json_raises_github_error() -> None:
         GitHubClient("tok").graphql("query {}")
 
 
-# ── discovery/project_fields: org/name repo list entries ──────────────────────
-
-
-def test_denylist_accepts_org_slash_name_form() -> None:
+def test_repository_names_and_project_fields_are_normalized() -> None:
     settings = _settings(github_repository_denylist_raw="OKsystem/secret-repo,plain-repo")
     with patch(
         "github_audit.discovery.fetch_repositories",
@@ -136,8 +121,6 @@ def test_denylist_accepts_org_slash_name_form() -> None:
         repos = discover_repositories(MagicMock(), settings)
     assert repos == ["OKsystem/kept"]
 
-
-def test_fetch_repositories_allowlist_accepts_org_slash_name_form() -> None:
     client = MagicMock()
     client.graphql.return_value = {
         "organization": {"repository": {"isArchived": False, "nameWithOwner": "OKsystem/repo"}}
@@ -146,8 +129,6 @@ def test_fetch_repositories_allowlist_accepts_org_slash_name_form() -> None:
     assert result == ["OKsystem/repo"]
     assert client.graphql.call_args[0][1]["name"] == "repo"
 
-
-def test_discover_project_matches_required_fields_casefolded() -> None:
     field = ProjectFieldDefinition(
         id="F1", name="priority", data_type="SINGLE_SELECT", kind="field"
     )
@@ -174,9 +155,6 @@ def test_discover_project_matches_required_fields_casefolded() -> None:
     assert result.required_fields_missing == []
 
 
-# ── scanner: single-project scan fallback must honor all include flags ────────
-
-
 def test_scan_fallback_search_passes_all_include_flags() -> None:
     discovery = DiscoveryResult(
         organization="OKsystem",
@@ -201,15 +179,10 @@ def test_scan_fallback_search_passes_all_include_flags() -> None:
     assert search.call_args.kwargs["include_unassigned"] is True
 
 
-# ── cli.merge_audits: empty input and cross-project duplicates ────────────────
-
-
-def test_merge_audits_empty_raises_value_error() -> None:
+def test_merge_audits_empty_and_cross_project_duplicates() -> None:
     with pytest.raises(ValueError, match="no projects discovered"):
         merge_audits([])
 
-
-def test_merge_audits_dedupes_cross_project_findings() -> None:
     on_board = _finding(1, project_item_id="ITEM1", missing=["Priority", "Estimate"])
     off_board = _finding(1, project_item_id=None, missing=["Development link"])
     merged = merge_audits([_audit([off_board]), _audit([on_board])])
@@ -218,17 +191,12 @@ def test_merge_audits_dedupes_cross_project_findings() -> None:
     assert merged.findings[0].project_item_id == "ITEM1"
 
 
-# ── config: REQUIRED_PROJECT_FIELDS sentinel and MY_WORK_MODE restore ─────────
-
-
-def test_required_project_fields_none_sentinel_disables_checks() -> None:
+def test_config_none_sentinel_and_my_work_mode_restore(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     assert _settings(required_project_fields_raw="none").required_project_fields == []
     assert _settings(required_project_fields_raw="None").required_project_fields == []
 
-
-def test_load_settings_restores_preexisting_my_work_mode(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
     (tmp_path / ".env").write_text(
         "GITHUB_TOKEN=tok\nGITHUB_INCLUDE_ALL_REPOSITORIES=true\nTARGET_ASSIGNEES=alice\n",
         encoding="utf-8",
@@ -239,31 +207,15 @@ def test_load_settings_restores_preexisting_my_work_mode(
     assert os.environ.get("MY_WORK_MODE") == "true"
 
 
-# ── agent_chat: command parsing must not fire on longer words ─────────────────
-
-
-def test_closed_projects_does_not_enable_closed_prs() -> None:
-    command = parse_agent_command("include closed projects in the scan")
-    assert command.control_updates == ()
-
-
-def test_only_project_fields_does_not_disable_issues() -> None:
-    command = parse_agent_command("show only project fields")
-    assert command.control_updates == ()
-
-
-def test_closed_prs_still_recognized() -> None:
+def test_parse_pr_word_boundaries() -> None:
+    assert parse_agent_command("include closed projects in the scan").control_updates == ()
+    assert parse_agent_command("show only project fields").control_updates == ()
     names = {u.name for u in parse_agent_command("include closed prs").control_updates}
     assert "include_closed_pull_requests" in names
 
-
-def test_only_pull_requests_still_recognized() -> None:
     names = {u.name for u in parse_agent_command("show only pull requests").control_updates}
     assert "include_pull_requests" in names
     assert "include_issues" in names
-
-
-# ── applier: retry queue must stay resolvable after a consumed board add ──────
 
 
 def test_resolve_created_item_ids_fills_empty_ids() -> None:
@@ -290,9 +242,6 @@ def test_resolve_created_item_ids_fills_empty_ids() -> None:
     assert untouched.project_item_id == "ITEM2"
 
 
-# ── llm_evaluator: history trimming must cut at run boundaries ────────────────
-
-
 def _tool_run() -> list[ModelMessage]:
     return [
         ModelRequest(parts=[UserPromptPart(content="question")]),
@@ -302,12 +251,10 @@ def _tool_run() -> list[ModelMessage]:
     ]
 
 
-def test_trim_message_history_keeps_short_history() -> None:
+def test_trim_message_history_edges() -> None:
     history = _tool_run()
     assert trim_message_history(history, 20) == history
 
-
-def test_trim_message_history_never_starts_with_orphaned_tool_return() -> None:
     history = _tool_run() + _tool_run() + _tool_run()
     trimmed = trim_message_history(history, 6)
     # a naive [-6:] slice would start with run 2's orphaned tool return
@@ -316,16 +263,11 @@ def test_trim_message_history_never_starts_with_orphaned_tool_return() -> None:
     assert isinstance(first, ModelRequest)
     assert any(isinstance(part, UserPromptPart) for part in first.parts)
 
-
-def test_trim_message_history_without_boundary_returns_empty() -> None:
     orphan: list[ModelMessage] = [
         ModelRequest(parts=[ToolReturnPart(tool_name="t", content="r", tool_call_id="c")]),
         ModelResponse(parts=[TextPart(content="a")]),
     ]
     assert trim_message_history(orphan * 3, 2) == []
-
-
-# ── report: CSV must neutralize formula injection ─────────────────────────────
 
 
 def test_write_csv_escapes_formula_titles(tmp_path: Path) -> None:
