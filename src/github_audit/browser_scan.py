@@ -9,7 +9,7 @@ from playwright.sync_api import Page, sync_playwright
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from github_audit.config import split_csv
+from github_audit.config import split_required_fields
 from github_audit.models import BrowserProjectFinding, BrowserScanResult
 
 
@@ -30,7 +30,7 @@ class BrowserSettings(BaseSettings):
 
     @property
     def required_project_fields(self) -> list[str]:
-        return split_csv(self.required_project_fields_raw)
+        return split_required_fields(self.required_project_fields_raw)
 
 
 RAW_SCAN_SCRIPT = """

@@ -75,14 +75,18 @@ class GitHubClient:
 
     def graphql(self, query: str, variables: Mapping[str, JsonValue] | None = None) -> JsonObject:
         payload: JsonObject = {"query": query, "variables": dict(variables or {})}
+        is_mutation = query.lstrip().startswith("mutation")
         for attempt in range(_MAX_ATTEMPTS):
             is_last = attempt == _MAX_ATTEMPTS - 1
             try:
                 response = self._client.post(GITHUB_GRAPHQL_URL, json=payload)
             except httpx.HTTPError as exc:
-                # Transport failures (timeout, connection reset) are transient like a 502;
-                # they must never escape as raw httpx errors - callers rely on GitHubError.
-                if not is_last:
+                # Transport failures must never escape as raw httpx errors - callers
+                # rely on GitHubError. Connect-phase failures never reached GitHub and
+                # are always safe to retry; a later failure (read timeout, reset) may
+                # mean a mutation already executed, where a blind retry double-writes.
+                request_sent = not isinstance(exc, httpx.ConnectError | httpx.ConnectTimeout)
+                if not is_last and not (request_sent and is_mutation):
                     time.sleep(min(float(2**attempt), _MAX_BACKOFF_SECONDS))
                     continue
                 msg = f"GitHub request failed: {exc}"

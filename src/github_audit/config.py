@@ -23,6 +23,14 @@ def split_csv(value: str) -> list[str]:
     return [part.strip() for part in value.split(",") if part.strip()]
 
 
+def split_required_fields(value: str) -> list[str]:
+    # env_ignore_empty makes "" fall back to the default, so "no required
+    # fields" needs an explicit sentinel the dashboard can write to .env.
+    if value.strip().casefold() == "none":
+        return []
+    return split_csv(value)
+
+
 def split_int_csv(value: str, label: str) -> list[int]:
     numbers: list[int] = []
     for part in split_csv(value):
@@ -267,11 +275,7 @@ class Settings(BaseSettings):
 
     @property
     def required_project_fields(self) -> list[str]:
-        # env_ignore_empty makes "" fall back to the default, so "no required
-        # fields" needs an explicit sentinel the dashboard can write to .env.
-        if self.required_project_fields_raw.strip().casefold() == "none":
-            return []
-        return split_csv(self.required_project_fields_raw)
+        return split_required_fields(self.required_project_fields_raw)
 
     @property
     def optional_project_fields(self) -> list[str]:

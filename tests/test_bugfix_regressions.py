@@ -277,3 +277,50 @@ def test_write_csv_escapes_formula_titles(tmp_path: Path) -> None:
     write_csv(out, audit)
     text = out.read_text(encoding="utf-8-sig")
     assert "'-1+1" in text
+
+
+def test_closed_issue_and_only_issue_need_word_boundaries() -> None:
+    assert parse_agent_command("the disclosed issues in that report").control_updates == ()
+    assert parse_agent_command("explain the readonly issue").control_updates == ()
+    names = {u.name for u in parse_agent_command("include closed issues").control_updates}
+    assert "include_closed_issues" in names
+    names = {u.name for u in parse_agent_command("show only issues").control_updates}
+    assert "include_issues" in names
+
+
+def test_browser_settings_honors_none_sentinel() -> None:
+    from github_audit.browser_scan import BrowserSettings
+
+    assert BrowserSettings(required_project_fields_raw="none").required_project_fields == []
+    assert BrowserSettings(required_project_fields_raw="Estimate").required_project_fields == [
+        "Estimate"
+    ]
+
+
+def test_graphql_does_not_retry_mutation_after_request_was_sent() -> None:
+    # a read timeout after the POST went out may mean the mutation already
+    # executed; retrying would double-write (e.g. duplicate comments)
+    instance = MagicMock()
+    instance.post.side_effect = httpx.ReadTimeout("timed out")
+    with (
+        patch("github_audit.github_client.httpx.Client", return_value=instance),
+        patch("time.sleep"),
+        pytest.raises(GitHubError, match="GitHub request failed"),
+    ):
+        GitHubClient("tok").graphql("mutation AddComment { x }")
+    assert instance.post.call_count == 1
+
+
+def test_graphql_retries_mutation_on_connect_error() -> None:
+    # connect-phase failures never reached GitHub, so mutations are safe to retry
+    instance = MagicMock()
+    instance.post.side_effect = [
+        httpx.ConnectError("refused"),
+        _ok_response({"data": {"ok": True}}),
+    ]
+    with (
+        patch("github_audit.github_client.httpx.Client", return_value=instance),
+        patch("time.sleep"),
+    ):
+        assert GitHubClient("tok").graphql("mutation AddComment { x }") == {"ok": True}
+    assert instance.post.call_count == 2

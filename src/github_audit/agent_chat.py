@@ -39,9 +39,10 @@ def parse_agent_command(text: str) -> AgentCommand:
     normalized = " ".join(text.casefold().split())
     updates: list[ControlUpdate] = []
 
-    # \b guards: "closed pr" must not fire inside "closed projects", nor
-    # "only pr" inside "only project".
-    if "closed issue" in normalized:
+    # \b guards: "closed pr" must not fire inside "closed projects", "only pr"
+    # not inside "only project", "closed issue" not inside "disclosed issues",
+    # "only issue" not inside "readonly issue".
+    if re.search(r"\bclosed issues?\b", normalized):
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_closed_issues", True))
     if re.search(r"\bclosed (?:prs?|pull requests?)\b", normalized):
@@ -50,7 +51,7 @@ def parse_agent_command(text: str) -> AgentCommand:
     if re.search(r"\bonly (?:prs?|pull requests?)\b", normalized):
         updates.append(ControlUpdate("include_issues", False))
         updates.append(ControlUpdate("include_pull_requests", True))
-    if "only issue" in normalized:
+    if re.search(r"\bonly issues?\b", normalized):
         updates.append(ControlUpdate("include_issues", True))
         updates.append(ControlUpdate("include_pull_requests", False))
     if re.search(r"\bissues and (?:prs?|pull requests?)\b", normalized):
