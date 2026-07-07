@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 
 from github_audit.api import main
 from github_audit.api.service import ChatResult, ChatUnavailableError
+from github_audit.github_client import GitHubError
 
 
 class FakeService:
@@ -111,3 +112,35 @@ def test_chat_error_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert response.status_code == 503
     assert response.json()["detail"] == "LLM is not configured"
+
+
+def test_chat_github_error_maps_to_502(monkeypatch: pytest.MonkeyPatch) -> None:
+    class GitHubBrokenService(FakeService):
+        def reply(
+            self,
+            message: str,
+            conversation_id: str | None = None,
+            context: str | None = None,
+        ) -> ChatResult:
+            raise GitHubError("GitHub GraphQL error: API rate limit already exceeded")
+
+        def stream(
+            self,
+            message: str,
+            conversation_id: str | None = None,
+            context: str | None = None,
+        ) -> tuple[Iterator[str], Callable[[], ChatResult]] | None:
+            return None
+
+        def context_options(self) -> list[dict[str, str]]:
+            raise GitHubError("GitHub GraphQL error: API rate limit already exceeded")
+
+    monkeypatch.setattr(main, "service", GitHubBrokenService())
+
+    response = TestClient(main.app).post("/chat?stream=false", json={"prompt": "hello"})
+    assert response.status_code == 502
+    assert "rate limit" in response.json()["detail"]
+
+    response = TestClient(main.app).get("/context")
+    assert response.status_code == 502
+    assert "rate limit" in response.json()["detail"]

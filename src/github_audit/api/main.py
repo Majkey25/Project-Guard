@@ -19,6 +19,7 @@ from github_audit.api.schemas import (
     StatusPayload,
 )
 from github_audit.api.service import ChatResult, ChatServiceError, ProjectGuardChatService
+from github_audit.github_client import GitHubError
 
 app = FastAPI(title="Project Guard API", docs_url=None, redoc_url=None)
 service = ProjectGuardChatService()
@@ -37,6 +38,8 @@ def context_options() -> ContextOptionsPayload:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except ChatServiceError as exc:
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 @app.post("/chat", response_model=None)
@@ -64,6 +67,8 @@ def chat(
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except GitHubError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 def _stream_events(

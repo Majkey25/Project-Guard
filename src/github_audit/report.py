@@ -94,10 +94,32 @@ def audit_text(audit: AuditResult) -> str:
                 f"  [{type_badge}] #{finding.number}  {title}{updated}",
                 f"    Missing: {', '.join(finding.missing_fields)}",
                 f"    {finding.url}",
-                "",
             ]
+            lines += _suggestion_lines(finding)
+            lines.append("")
     lines.extend(f"Limitation: {limitation}" for limitation in audit.limitations)
     return "\n".join(lines)
+
+
+def _suggestion_lines(finding: AuditFinding) -> list[str]:
+    suggestion = finding.llm_suggestion
+    if suggestion is None:
+        return []
+    values = [
+        f"{name}={value}"
+        for name, value in (
+            ("Estimate", suggestion.estimated_points),
+            ("Difficulty", suggestion.difficulty),
+            ("Priority", suggestion.priority),
+            ("Iteration", suggestion.suggested_iteration),
+        )
+        if value is not None
+    ]
+    summary = ", ".join(values) or "no values"
+    lines = [f"    Suggest: {summary} (confidence {suggestion.confidence:.2f})"]
+    if suggestion.rationale:
+        lines.append(f"    Why: {suggestion.rationale}")
+    return lines
 
 
 def browser_scan_text(result: BrowserScanResult) -> str:
