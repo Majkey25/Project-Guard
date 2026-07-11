@@ -601,6 +601,12 @@ def _clear_scan_results() -> None:
         st.session_state[key] = None
     st.session_state.project_ids_by_number = None
     st.session_state.project_fields_by_number = None
+    # Queued writes reference findings that no longer exist; "apply it" after a
+    # failed rescan must not fire them against GitHub.
+    st.session_state.agent_pending_writes = []
+    st.session_state.agent_pending_project_id = None
+    st.session_state.agent_pending_fields = None
+    st.session_state.agent_pending_content_id = None
 
 
 def _run_scan() -> None:
@@ -1126,8 +1132,9 @@ def _render_agent_assistant(visible_rows: list[FindingRow]) -> None:
 
     _ALL_LABEL = "🔍 All findings"
     # Mirror the table: only rows passing the current filters are offered.
+    # Repo prefix keeps labels unique when two repos share a number and title.
     target_options = {
-        f"#{row['number']} {row['title'][:40]}": (
+        f"{row['repository'].split('/')[-1]}#{row['number']} {row['title'][:40]}": (
             row["repository"],
             row["item_type"],
             row["number"],

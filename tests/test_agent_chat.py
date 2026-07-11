@@ -90,6 +90,13 @@ def test_parse_scan_ignores_run_inside_words_and_field_requests() -> None:
     assert parse_agent_command("scan again").run_scan is True
 
 
+def test_parse_scan_ignores_conversational_table_mentions() -> None:
+    chatty = parse_agent_command("can you run down the table and tell me what's overdue?")
+    assert chatty.run_scan is False
+    assert parse_agent_command("i'll run through the table myself").run_scan is False
+    assert parse_agent_command("run the table again").run_scan is True
+
+
 def test_parse_explain_only_when_prompt_leads_with_it() -> None:
     assert parse_agent_command("explain").explain is True
     assert parse_agent_command("why is this missing an estimate?").explain is True

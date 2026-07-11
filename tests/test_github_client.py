@@ -178,6 +178,38 @@ def test_graphql_honors_retry_after_header_on_429(http: MagicMock) -> None:
     sleep.assert_called_once_with(3.0)
 
 
+def test_graphql_mutation_does_not_retry_502(http: MagicMock) -> None:
+    """A 5xx may arrive after the mutation ran server-side; retrying double-writes."""
+    http.post.side_effect = [
+        _resp(status=502, text="bad gateway"),
+        _resp(body={"data": {"ok": True}}),
+    ]
+    with patch("time.sleep"), pytest.raises(GitHubError, match="502"):
+        GitHubClient("tok").graphql("mutation { addComment }")
+    assert http.post.call_count == 1
+
+
+def test_graphql_mutation_retries_429(http: MagicMock) -> None:
+    http.post.side_effect = [
+        _resp(status=429, text="rate limited"),
+        _resp(body={"data": {"ok": True}}),
+    ]
+    with patch("time.sleep"):
+        result = GitHubClient("tok").graphql("mutation { addComment }")
+    assert result == {"ok": True}
+    assert http.post.call_count == 2
+
+
+def test_graphql_mutation_retries_rate_limited_403(http: MagicMock) -> None:
+    limited = _resp(status=403, text="secondary rate limit")
+    limited.headers = {"retry-after": "1"}
+    http.post.side_effect = [limited, _resp(body={"data": {"ok": True}})]
+    with patch("time.sleep"):
+        result = GitHubClient("tok").graphql("mutation { addComment }")
+    assert result == {"ok": True}
+    assert http.post.call_count == 2
+
+
 # ── context manager ───────────────────────────────────────────────────────────
 
 

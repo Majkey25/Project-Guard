@@ -164,7 +164,8 @@ def main(argv: list[str] | None = None) -> int:
         for note in exc.skipped:
             print(f"  skipped: {note}", file=sys.stderr)
         return 2
-    except (GitHubError, ValueError) as exc:
+    except (GitHubError, OSError, ValueError) as exc:
+        # OSError: report file locked (Excel) or target directory missing.
         print(str(exc), file=sys.stderr)
         return 2
     return 2

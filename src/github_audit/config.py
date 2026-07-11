@@ -164,7 +164,8 @@ class Settings(BaseSettings):
             msg = "LLM_BASE_URL must use http or https scheme"
             raise ValueError(msg)
         host = parsed.hostname or ""
-        # Block cloud metadata endpoints and RFC 1918 ranges to prevent SSRF.
+        # Block cloud metadata endpoints (link-local, GCP host) to prevent SSRF.
+        # Private/loopback ranges stay allowed on purpose: local LLMs (ollama).
         _SSRF_BLOCKED = ("169.254.", "::1", "0.0.0.0")
         _SSRF_BLOCKED_HOSTS = {"metadata.google.internal"}
         if any(host.startswith(p) for p in _SSRF_BLOCKED) or host in _SSRF_BLOCKED_HOSTS:
@@ -305,20 +306,11 @@ class Settings(BaseSettings):
 
 
 def load_settings(*, my_work_mode: bool = False) -> Settings:
-    import os
-
-    previous = os.environ.get("MY_WORK_MODE")
-    if my_work_mode:
-        os.environ["MY_WORK_MODE"] = "true"
+    # Init kwarg outranks env/.env, so a stale MY_WORK_MODE=true left in the
+    # environment cannot disable project-number validation for other commands.
     try:
-        return Settings()
+        return Settings(my_work_mode=my_work_mode)
     except ValidationError as exc:
         errors = "; ".join(error["msg"] for error in exc.errors())
         msg = f"Invalid configuration: {errors}"
         raise ValueError(msg) from exc
-    finally:
-        if my_work_mode:
-            if previous is None:
-                os.environ.pop("MY_WORK_MODE", None)
-            else:
-                os.environ["MY_WORK_MODE"] = previous

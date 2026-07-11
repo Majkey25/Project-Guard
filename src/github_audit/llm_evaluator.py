@@ -4,7 +4,7 @@ import logging
 import threading
 import time
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncGenerator, Callable
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from typing import TYPE_CHECKING, Literal, cast
@@ -361,8 +361,13 @@ def general_chat_stream(
     *,
     message_history: list[ModelMessage] | None = None,
     in_tool_commands: bool = True,
-) -> tuple[Iterator[str], Callable[[], list[ModelMessage]]]:
-    """Return (token stream, get_new_messages). Call get_new_messages() after exhausting tokens."""
+) -> tuple[AsyncGenerator[str, None], Callable[[], list[ModelMessage]]]:
+    """Return (async token stream, get_new_messages); call the getter after the stream ends.
+
+    Async so a disconnected SSE client cancels the stream at an await point and
+    the run_stream context closes the in-flight LLM request instead of leaving
+    it running to completion in a worker thread.
+    """
     settings.validate_llm()
     from pydantic_ai import Agent
 
@@ -370,14 +375,17 @@ def general_chat_stream(
     key = _cache_key(settings, f"agent_stream:{instructions}")
     agent = _cached_agent(key, lambda: Agent(_make_model(settings), instructions=instructions))
     full_prompt = f"{context}\n\nUser: {prompt}"
-    _logger.debug("┌─ LLM chat_stream")
-    result = agent.run_stream_sync(full_prompt, message_history=message_history or [])
+    new_messages: list[ModelMessage] = []
 
-    def tokens() -> Iterator[str]:
-        yield from result.stream_text(delta=True, debounce_by=None)
+    async def tokens() -> AsyncGenerator[str, None]:
+        _logger.debug("┌─ LLM chat_stream")
+        async with agent.run_stream(full_prompt, message_history=message_history or []) as result:
+            async for chunk in result.stream_text(delta=True, debounce_by=None):
+                yield chunk
+            new_messages.extend(result.new_messages())
         _logger.debug("└─ LLM chat_stream ok")
 
-    return tokens(), lambda: list(result.new_messages())
+    return tokens(), lambda: list(new_messages)
 
 
 def project_agent_chat(

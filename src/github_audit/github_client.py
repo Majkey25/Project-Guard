@@ -91,7 +91,14 @@ class GitHubClient:
                     continue
                 msg = f"GitHub request failed: {exc}"
                 raise GitHubError(msg) from exc
-            retryable = response.status_code in _RETRYABLE_STATUSES and not is_last
+            # 5xx can arrive after the mutation already executed server-side, so a
+            # retry double-writes (e.g. duplicate addComment). 429 and rate-limited
+            # 403 are rejected before execution and stay safe to retry.
+            retryable = (
+                response.status_code in _RETRYABLE_STATUSES
+                and not is_last
+                and (not is_mutation or response.status_code in {403, 429})
+            )
             if retryable and (response.status_code != 403 or _looks_rate_limited(response)):
                 time.sleep(min(_retry_delay(response, attempt), _MAX_BACKOFF_SECONDS))
                 continue

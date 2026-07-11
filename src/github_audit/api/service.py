@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import Callable, Iterator
+from collections.abc import AsyncGenerator, Callable
 from concurrent.futures import Future
+from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from threading import Lock
@@ -222,7 +223,7 @@ class ProjectGuardChatService:
         message: str,
         conversation_id: str | None = None,
         context: str | None = None,
-    ) -> tuple[Iterator[str], Callable[[], ChatResult]] | None:
+    ) -> tuple[AsyncGenerator[str, None], Callable[[], ChatResult]] | None:
         message = message.strip()
         if not message:
             raise ChatInputError("message is empty")
@@ -251,10 +252,12 @@ class ProjectGuardChatService:
             in_tool_commands=False,
         )
 
-        def tokens() -> Iterator[str]:
-            for chunk in token_iter:
-                chunks.append(chunk)
-                yield chunk
+        async def tokens() -> AsyncGenerator[str, None]:
+            # aclosing: closing this generator must also close the LLM stream.
+            async with aclosing(token_iter):
+                async for chunk in token_iter:
+                    chunks.append(chunk)
+                    yield chunk
 
         def finalise() -> ChatResult:
             new_messages = get_new_messages()

@@ -108,7 +108,7 @@ def discover_project(
         required_fields_missing=required_missing,
         issue_sample_count=issue_sample_count,
         pull_request_sample_count=pull_request_sample_count,
-        project_item_sample_count=min(len(project_items), 50),
+        project_item_sample_count=len(project_items),
         content_types=content_types,
         development_strategy="closing references via GraphQL; branch links reported as limitation",
         development_limitations=limitations,

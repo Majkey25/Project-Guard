@@ -108,12 +108,15 @@ def run_browser_scan(
                 "Install browser support with: uv run python -m playwright install chromium"
             )
             raise RuntimeError(msg) from last_error
-        page = context.pages[0] if context.pages else context.new_page()
-        page.goto(start_url)
-        wait_for_user("Sign in, open the GitHub Project table view, then press Enter here...")
-        result = collect_browser_scan(page, settings.required_project_fields)
-        context.close()
-        return result
+        # Close the browser on every path: an orphaned Chromium process keeps file
+        # locks on user_data_dir and TemporaryDirectory cleanup fails on Windows.
+        try:
+            page = context.pages[0] if context.pages else context.new_page()
+            page.goto(start_url)
+            wait_for_user("Sign in, open the GitHub Project table view, then press Enter here...")
+            return collect_browser_scan(page, settings.required_project_fields)
+        finally:
+            context.close()
 
 
 def collect_browser_scan(page: Page, required_fields: Sequence[str]) -> BrowserScanResult:

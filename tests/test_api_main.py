@@ -1,6 +1,8 @@
+# pyright: reportPrivateUsage=false
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
+import asyncio
+from collections.abc import AsyncGenerator, Callable
 
 import pytest
 from fastapi.testclient import TestClient
@@ -35,15 +37,18 @@ class FakeService:
         message: str,
         conversation_id: str | None = None,
         context: str | None = None,
-    ) -> tuple[Iterator[str], Callable[[], ChatResult]] | None:
+    ) -> tuple[AsyncGenerator[str, None], Callable[[], ChatResult]] | None:
         if context:
             return None
-        chunks = iter(("hel", "lo"))
+
+        async def chunks() -> AsyncGenerator[str, None]:
+            yield "hel"
+            yield "lo"
 
         def finalise() -> ChatResult:
             return ChatResult(conversation_id or "new-session", f"hello:{message}")
 
-        return chunks, finalise
+        return chunks(), finalise
 
 
 @pytest.fixture(autouse=True)
@@ -88,6 +93,27 @@ def test_chat_sse_path() -> None:
     assert "data: [DONE]" in response.text
 
 
+def test_stream_events_close_propagates_to_token_stream() -> None:
+    """Client disconnect closes _stream_events; the LLM token stream must close too."""
+    closed = False
+
+    async def tokens() -> AsyncGenerator[str, None]:
+        nonlocal closed
+        try:
+            yield "a"
+            yield "b"
+        finally:
+            closed = True
+
+    async def scenario() -> None:
+        events = main._stream_events((tokens(), lambda: ChatResult("s", "ab")))
+        assert await anext(events) == {"data": '{"delta": "a"}'}
+        await events.aclose()
+
+    asyncio.run(scenario())
+    assert closed is True
+
+
 def test_chat_error_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
     class BrokenService(FakeService):
         def reply(
@@ -103,7 +129,7 @@ def test_chat_error_mapping(monkeypatch: pytest.MonkeyPatch) -> None:
             message: str,
             conversation_id: str | None = None,
             context: str | None = None,
-        ) -> tuple[Iterator[str], Callable[[], ChatResult]] | None:
+        ) -> tuple[AsyncGenerator[str, None], Callable[[], ChatResult]] | None:
             return None
 
     monkeypatch.setattr(main, "service", BrokenService())
@@ -129,7 +155,7 @@ def test_chat_github_error_maps_to_502(monkeypatch: pytest.MonkeyPatch) -> None:
             message: str,
             conversation_id: str | None = None,
             context: str | None = None,
-        ) -> tuple[Iterator[str], Callable[[], ChatResult]] | None:
+        ) -> tuple[AsyncGenerator[str, None], Callable[[], ChatResult]] | None:
             return None
 
         def context_options(self) -> list[dict[str, str]]:

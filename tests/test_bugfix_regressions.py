@@ -206,6 +206,11 @@ def test_config_none_sentinel_and_my_work_mode_restore(
     load_settings(my_work_mode=True)
     assert os.environ.get("MY_WORK_MODE") == "true"
 
+    # stale MY_WORK_MODE=true must not skip project-number validation
+    with pytest.raises(ValueError, match="GITHUB_PROJECT_NUMBER"):
+        load_settings()
+    assert load_settings(my_work_mode=True).my_work_mode is True
+
 
 def test_parse_pr_word_boundaries() -> None:
     assert parse_agent_command("include closed projects in the scan").control_updates == ()

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import argparse
 import json
-from collections.abc import Callable, Iterator
+import logging
+from collections.abc import AsyncGenerator, Callable
+from contextlib import aclosing
 from typing import Annotated, cast
 
 import uvicorn
@@ -20,6 +22,8 @@ from github_audit.api.schemas import (
 )
 from github_audit.api.service import ChatResult, ChatServiceError, ProjectGuardChatService
 from github_audit.github_client import GitHubError
+
+_logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Project Guard API", docs_url=None, redoc_url=None)
 service = ProjectGuardChatService()
@@ -71,17 +75,22 @@ def chat(
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
-def _stream_events(
-    stream_bundle: tuple[Iterator[str], Callable[[], ChatResult]],
-) -> Iterator[dict[str, str]]:
+async def _stream_events(
+    stream_bundle: tuple[AsyncGenerator[str, None], Callable[[], ChatResult]],
+) -> AsyncGenerator[dict[str, str], None]:
+    # Async end to end: a client disconnect cancels this generator at an await
+    # point, and aclosing propagates the close down to the LLM stream instead
+    # of leaving the request running.
     tokens, finalise = stream_bundle
     try:
-        for token in tokens:
-            if token:
-                yield {"data": json.dumps({"delta": token}, ensure_ascii=False)}
+        async with aclosing(tokens):
+            async for token in tokens:
+                if token:
+                    yield {"data": json.dumps({"delta": token}, ensure_ascii=False)}
         yield {"data": json.dumps(_payload(finalise()), ensure_ascii=False)}
         yield {"data": "[DONE]"}
     except Exception:
+        _logger.exception("chat stream failed")
         yield {"data": json.dumps({"error": "Chat failed"}, ensure_ascii=False)}
         yield {"data": "[DONE]"}
 
