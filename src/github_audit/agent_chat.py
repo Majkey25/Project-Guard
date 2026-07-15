@@ -146,9 +146,7 @@ def _wants_scan(normalized: str) -> bool:
     if re.search(r"\b(rescan|rerun)\b", normalized) or "scan again" in normalized:
         return True
     # "table" alone is too loose ("run through the table" is not a rescan request).
-    return bool(
-        re.search(r"\brun\b", normalized) and re.search(r"\b(scan|again)\b", normalized)
-    )
+    return bool(re.search(r"\brun\b", normalized) and re.search(r"\b(scan|again)\b", normalized))
 
 
 def _wants_explain(normalized: str) -> bool:
