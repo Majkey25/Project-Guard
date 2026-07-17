@@ -61,6 +61,7 @@ class ProjectItem(BaseModel):
     milestone: str | None = None
     updated_at: str | None = None
     state: str = ""
+    is_draft: bool = False
     field_values: dict[str, ProjectFieldValue] = Field(default_factory=dict)
     linked_pull_requests_count: int = 0
     closing_issues_count: int = 0
@@ -94,6 +95,7 @@ class GitHubPullRequest(BaseModel):
     title: str
     url: str
     state: str
+    is_draft: bool = False
     body: str
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
@@ -194,6 +196,8 @@ class AuditFinding(BaseModel):
     comments: list[GitHubComment] = Field(default_factory=_empty_comments, exclude=True)
     comments_total_count: int = Field(default=0, exclude=True)
     url: str
+    state: str = ""
+    is_draft: bool = False
     assignees: list[str]
     labels: list[str] = Field(default_factory=list)
     milestone: str | None = None
@@ -204,6 +208,13 @@ class AuditFinding(BaseModel):
     project_item_id: str | None = None
     llm_suggestion: LLMSuggestion | None = None
     apply_status: str = "not_planned"
+
+    @property
+    def display_state(self) -> str:
+        """Human state label: Open, Draft, Merged, or Closed."""
+        if self.is_draft and self.state.upper() == "OPEN":
+            return "Draft"
+        return self.state.capitalize() if self.state else ""
 
 
 class AuditResult(BaseModel):
@@ -386,6 +397,39 @@ class BrowserScanResult(BaseModel):
     findings: list[BrowserProjectFinding]
     missing_headers: list[str]
     limitations: list[str] = Field(default_factory=list)
+
+
+class BranchPullRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    number: int
+    state: str
+    is_draft: bool = False
+    title: str
+    url: str
+
+
+class BranchInfo(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    repository: str
+    name: str
+    url: str
+    is_default: bool = False
+    last_commit_date: str | None = None
+    last_committer: str | None = None
+    last_commit_message: str = ""
+    pull_requests: list[BranchPullRequest] = Field(default_factory=list[BranchPullRequest])
+    pull_requests_total: int = 0
+
+    @property
+    def pr_state(self) -> str:
+        """Best associated-PR state: open beats merged beats closed."""
+        states = {pr.state.upper() for pr in self.pull_requests}
+        for state, label in (("OPEN", "open"), ("MERGED", "merged"), ("CLOSED", "closed")):
+            if state in states:
+                return label
+        return "none"
 
 
 class MyWorkItem(BaseModel):

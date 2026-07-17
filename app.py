@@ -18,6 +18,7 @@ from github_audit.applier import (
     describe_pending_write,
     resolve_created_item_ids,
 )
+from github_audit.branches import fetch_branches
 from github_audit.config import Settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
@@ -25,16 +26,18 @@ from github_audit.models import (
     AddToProjectPlan,
     ApplyPlan,
     AuditFinding,
+    BranchInfo,
     PendingWrite,
     ProjectFieldDefinition,
 )
+from github_audit.offline_export import OfflineColumn, render_offline_html
 from github_audit.project_fields import (
     fetch_assignable_users,
     fetch_repo_labels,
     fetch_repo_milestones,
     search_items,
 )
-from github_audit.scanner import scan_all
+from github_audit.scanner import parse_github_date, scan_all
 
 st.set_page_config(page_title="GitHub Audit", page_icon="🔍", layout="wide")
 
@@ -48,15 +51,29 @@ st.html("""<style>
 
 
 class FindingRow(TypedDict):
-    project: int
+    # None when the item is not on the scanned board — a number here would be
+    # whichever project scan happened to win deduplication, i.e. noise.
+    project: int | None
     project_title: str
     repository: str
     item_type: str
+    state: str
     number: int
     updated_at: str
     title: str
     assignees: str
     missing_fields: str
+    url: str
+
+
+class BranchRow(TypedDict):
+    repository: str
+    branch: str
+    age_days: int
+    last_commit: str
+    committer: str
+    pr_state: str
+    prs: str
     url: str
 
 
@@ -123,6 +140,7 @@ _XLSX_HEADERS = {
     "project_title": "Project title",
     "repository": "Repository",
     "item_type": "Type",
+    "state": "State",
     "number": "#",
     "updated_at": "Updated",
     "title": "Title",
@@ -219,6 +237,9 @@ session_defaults: dict[str, object | None] = {
     "stats": None,
     "limitations": list[str](),
     "scan_time": None,
+    "branches": None,
+    "branches_error": None,
+    "branches_time": None,
     "project_ids_by_number": None,
     "project_fields_by_number": None,
     "agent_messages": [],
@@ -686,11 +707,13 @@ def _run_scan() -> None:
     best: dict[tuple[str, str, int], tuple[FindingRow, AuditFinding]] = {}
     for r in results:
         for f in r.findings:
+            on_board = f.project_item_id is not None
             row: FindingRow = {
-                "project": f.project_number or 0,
-                "project_title": f.project_title or "",
+                "project": f.project_number if on_board else None,
+                "project_title": (f.project_title or "") if on_board else "",
                 "repository": f.repository.split("/")[-1],
                 "item_type": "PR" if f.item_type == "pull_request" else "Issue",
+                "state": f.display_state,
                 "number": f.number,
                 "updated_at": _date_label(f.updated_at),
                 "title": f.title,
@@ -1187,6 +1210,523 @@ def _render_agent_assistant(visible_rows: list[FindingRow]) -> None:
         st.rerun()
 
 
+# ── state styling ─────────────────────────────────────────────────────────────
+# GitHub conventions: open = green, closed = red, merged = purple, draft = gray.
+_STATE_DOTS = {"Open": "🟢", "Draft": "⚪", "Merged": "🟣", "Closed": "🔴"}
+_PR_STATE_LABELS = {
+    "open": "🟢 Open PR",
+    "merged": "🟣 Merged PR",
+    "closed": "🔴 Closed PR",
+    "none": "⚪ No PR",
+}
+
+
+def _state_cell(state: str) -> str:
+    dot = _STATE_DOTS.get(state)
+    return f"{dot} {state}" if dot else state
+
+
+# ── offline HTML export ───────────────────────────────────────────────────────
+_EXPORTS_DIR = Path(__file__).parent / "exports"
+
+
+def _save_export_copy(file_name: str, content: str) -> None:
+    """Keep a reliable copy on disk — some browsers (webviews, Brave) mangle
+    the downloaded file name or extension."""
+    try:
+        _EXPORTS_DIR.mkdir(exist_ok=True)
+        path = _EXPORTS_DIR / file_name
+        path.write_text(content, encoding="utf-8")
+        st.toast(f"Copy saved to {path}", icon="💾")
+    except OSError as exc:
+        st.toast(f"Could not save a local copy: {exc}", icon="⚠️")
+
+
+def _findings_offline_html(all_rows: list[FindingRow]) -> str:
+    columns = [
+        OfflineColumn("repository", "Repository", filterable=True),
+        OfflineColumn("item_type", "Type", "badge", filterable=True),
+        OfflineColumn("state", "State", "badge", filterable=True),
+        OfflineColumn("number", "#", "number"),
+        OfflineColumn("updated_at", "Updated"),
+        OfflineColumn("title", "Title"),
+        OfflineColumn("assignees", "Assignees", filterable=True, split=True),
+        OfflineColumn("missing_fields", "Missing fields", filterable=True, split=True),
+        OfflineColumn("url", "Link", "link"),
+    ]
+    export_rows: list[dict[str, str | int]] = [
+        {
+            "repository": row["repository"],
+            "item_type": row["item_type"],
+            "state": row["state"],
+            "number": row["number"],
+            "updated_at": row["updated_at"],
+            "title": row["title"],
+            "assignees": row["assignees"],
+            "missing_fields": row["missing_fields"],
+            "url": row["url"],
+        }
+        for row in all_rows
+    ]
+    subtitle = (
+        f"{org or 'GitHub'} · scanned {st.session_state.scan_time or '?'} · "
+        f"{len(all_rows)} findings · filters work fully offline"
+    )
+    return render_offline_html("GitHub Audit — Issues & PRs", subtitle, columns, export_rows)
+
+
+def _branches_offline_html(branch_rows: list[BranchRow], threshold: int) -> str:
+    columns = [
+        OfflineColumn("repository", "Repository", filterable=True),
+        OfflineColumn("branch", "Branch"),
+        OfflineColumn("status", "Status", "badge", filterable=True),
+        OfflineColumn("age_days", "Age (days)", "number", min_filter=True),
+        OfflineColumn("last_commit", "Last commit"),
+        OfflineColumn("committer", "Committer", filterable=True),
+        OfflineColumn("pr_state", "PR status", "badge", filterable=True),
+        OfflineColumn("prs", "Pull requests"),
+        OfflineColumn("url", "Link", "link"),
+    ]
+    export_rows: list[dict[str, str | int]] = [
+        {
+            "repository": row["repository"],
+            "branch": row["branch"],
+            "status": "Stale" if _is_stale(row, threshold) else "Active",
+            "age_days": row["age_days"],
+            "last_commit": row["last_commit"],
+            "committer": row["committer"],
+            "pr_state": row["pr_state"],
+            "prs": row["prs"],
+            "url": row["url"],
+        }
+        for row in branch_rows
+    ]
+    subtitle = (
+        f"{org or 'GitHub'} · scanned {st.session_state.branches_time or '?'} · "
+        f"{len(branch_rows)} branches · stale = no open PR and no commit "
+        f"in {threshold} days · filters work fully offline"
+    )
+    return render_offline_html("GitHub Audit — Branches", subtitle, columns, export_rows)
+
+
+# ── branch audit ──────────────────────────────────────────────────────────────
+def _is_stale(row: BranchRow, threshold: int) -> bool:
+    return row["age_days"] >= threshold and row["pr_state"] != "open"
+
+
+def _pr_label(state: str, is_draft: bool) -> str:
+    return "draft" if is_draft and state.upper() == "OPEN" else state.lower()
+
+
+def _branch_rows(branches: list[BranchInfo]) -> list[BranchRow]:
+    today = date.today()
+    branch_rows: list[BranchRow] = []
+    for branch in branches:
+        commit_date = parse_github_date(branch.last_commit_date)
+        prs = ", ".join(
+            f"#{pr.number} ({_pr_label(pr.state, pr.is_draft)})" for pr in branch.pull_requests
+        )
+        if branch.pull_requests_total > len(branch.pull_requests):
+            prs += f", +{branch.pull_requests_total - len(branch.pull_requests)} more"
+        branch_rows.append(
+            BranchRow(
+                repository=branch.repository.split("/")[-1],
+                branch=branch.name,
+                age_days=(today - commit_date).days if commit_date else -1,
+                last_commit=_date_label(branch.last_commit_date),
+                committer=branch.last_committer or "(unknown)",
+                pr_state=branch.pr_state,
+                prs=prs or "(none)",
+                url=branch.url,
+            )
+        )
+    branch_rows.sort(key=lambda r: r["age_days"], reverse=True)
+    return branch_rows
+
+
+def _run_branch_scan() -> None:
+    try:
+        settings = Settings.model_validate(
+            {
+                "github_token": token,
+                "github_org": org,
+                # branch audit needs no project boards — skip project validation
+                "my_work_mode": True,
+                "require_target_assignee": False,
+                "github_include_all_repositories": inc_all_repos,
+                "github_repository_allowlist_raw": "" if inc_all_repos else _csv(repo_allowlist),
+                "github_repository_denylist_raw": _csv(repo_denylist),
+            }
+        )
+    except ValidationError as exc:
+        msgs = "; ".join(e["msg"] for e in exc.errors())
+        st.session_state.branches_error = f"Configuration error: {msgs}"
+        return
+    try:
+        with GitHubClient(settings.github_token) as client:
+            repositories = discover_repositories(client, settings)
+            branches = fetch_branches(client, repositories)
+    except GitHubError as exc:
+        st.session_state.branches_error = str(exc)
+        return
+    # Default branches (main/master) are never cleanup candidates.
+    st.session_state.branches = _branch_rows([b for b in branches if not b.is_default])
+    st.session_state.branches_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.session_state.branches_error = None
+
+
+def _render_branch_tab() -> None:
+    bc1, bc2, bc3 = st.columns([1.2, 1, 2.8])
+    with bc1:
+        st.write("")
+        branch_btn = st.button("▶ Scan Branches", type="primary", width="stretch")
+    with bc2:
+        threshold = int(
+            st.number_input(
+                "Stale after (days)",
+                min_value=1,
+                max_value=3650,
+                value=30,
+                help=(
+                    "A branch counts as stale when its last commit is older than this "
+                    "and it has no open pull request. Adjust freely — nothing is deleted."
+                ),
+            )
+        )
+    with bc3:
+        st.write("")
+        st.caption(
+            "Audits branches in the configured repository scope. Default branches are "
+            "excluded. Decision support only — this never deletes anything."
+        )
+
+    if branch_btn:
+        if not token.strip() or not org.strip():
+            st.session_state.branches_error = "GitHub token and organization are required."
+        elif not inc_all_repos and not repo_allowlist.strip():
+            st.session_state.branches_error = (
+                "Either enable 'All org repositories' or enter a repository allowlist."
+            )
+        else:
+            with st.spinner("Fetching branches from GitHub…"):
+                _run_branch_scan()
+
+    if st.session_state.branches_error:
+        st.error(st.session_state.branches_error)
+    branch_rows = cast(list[BranchRow] | None, st.session_state.branches)
+    if branch_rows is None:
+        st.info(
+            "Click **▶ Scan Branches** to list all branches with their age, last "
+            "committer, and pull request status — and spot stale ones."
+        )
+        return
+
+    stale_rows = [row for row in branch_rows if _is_stale(row, threshold)]
+    no_pr = sum(1 for row in branch_rows if row["pr_state"] == "none")
+    m1, m2, m3 = st.columns(3)
+    m1.metric("Branches", len(branch_rows))
+    m2.metric(f"Stale (>{threshold}d, no open PR)", len(stale_rows))
+    m3.metric("Without any PR", no_pr)
+    if st.session_state.branches_time:
+        st.caption(f"Last branch scan: {st.session_state.branches_time}")
+
+    all_branch_repos = sorted({row["repository"] for row in branch_rows})
+    all_committers = sorted({row["committer"] for row in branch_rows})
+    all_pr_states = [
+        s
+        for s in ("open", "merged", "closed", "none")
+        if any(r["pr_state"] == s for r in branch_rows)
+    ]
+    for _fk, _fopts in (
+        ("branch_filter_repos", all_branch_repos),
+        ("branch_filter_committers", all_committers),
+        ("branch_filter_pr_states", all_pr_states),
+    ):
+        if _fk in st.session_state:
+            st.session_state[_fk] = [v for v in st.session_state[_fk] if v in _fopts]
+    bf1, bf2, bf3, bf4 = st.columns([1, 1, 1, 0.8])
+    with bf1:
+        sel_branch_repos = st.multiselect("Repository", all_branch_repos, key="branch_filter_repos")
+    with bf2:
+        sel_committers = st.multiselect("Committer", all_committers, key="branch_filter_committers")
+    with bf3:
+        sel_pr_states = st.multiselect(
+            "PR status",
+            all_pr_states,
+            key="branch_filter_pr_states",
+            format_func=lambda s: _PR_STATE_LABELS.get(str(s), str(s)),
+        )
+    with bf4:
+        st.markdown('<div style="height:34px"></div>', unsafe_allow_html=True)
+        stale_only = st.toggle("Stale only", value=False)
+
+    visible = [
+        row
+        for row in branch_rows
+        if (not sel_branch_repos or row["repository"] in sel_branch_repos)
+        and (not sel_committers or row["committer"] in sel_committers)
+        and (not sel_pr_states or row["pr_state"] in sel_pr_states)
+        and (not stale_only or _is_stale(row, threshold))
+    ]
+    st.caption(f"Showing **{len(visible)}** of {len(branch_rows)} branches")
+    st.dataframe(
+        [
+            {
+                "Repository": row["repository"],
+                "Branch": row["branch"],
+                "Stale": "🟠 Stale" if _is_stale(row, threshold) else "",
+                "Age (days)": row["age_days"],
+                "Last commit": row["last_commit"],
+                "Committer": row["committer"],
+                "PR status": _PR_STATE_LABELS.get(row["pr_state"], row["pr_state"]),
+                "Pull requests": row["prs"],
+                "URL": row["url"],
+            }
+            for row in visible
+        ],
+        use_container_width=True,
+        hide_index=True,
+        height=min(600, 100 + len(visible) * 35),
+        column_config={
+            "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+            "Age (days)": st.column_config.NumberColumn("Age (days)", format="%d", width="small"),
+            "Stale": st.column_config.TextColumn("Stale", width="small"),
+            "Last commit": st.column_config.TextColumn("Last commit", width="small"),
+        },
+    )
+    branches_html = _branches_offline_html(branch_rows, threshold)
+    st.download_button(
+        "🌐 Download offline HTML report",
+        branches_html,
+        "github-audit-branches.html",
+        "text/html",
+        on_click=_save_export_copy,
+        args=("github-audit-branches.html", branches_html),
+        help=(
+            "Self-contained page with all scanned branches — open and filter anywhere. "
+            "A copy is also saved to the app's exports folder."
+        ),
+    )
+
+
+# ── findings tab ──────────────────────────────────────────────────────────────
+def _render_findings_tab() -> None:
+    if st.session_state.rows is None:
+        with _ai_popover:
+            _render_agent_assistant([])
+        st.info(
+            "Configure settings in the sidebar, then click **▶ Run Scan** to audit "
+            "your GitHub Projects for missing fields and workflow gaps."
+        )
+        with st.expander("What does this tool check?"):
+            st.markdown("""
+- **Required fields** — Estimate, Priority, Iteration (sprint), Difficulty, Status (configurable)
+- **Assignees** — whether items are assigned and to your target users
+- **Development links** — whether issues have a linked PR or branch
+- **Project board membership** — optional check for items missing from the V2 board
+            """)
+        return
+
+    rows = cast(list[FindingRow], st.session_state.rows)
+    stats = cast(ScanStats, st.session_state.stats)
+
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Issues scanned", stats["issues"])
+    c2.metric("PRs scanned", stats["prs"])
+    c3.metric("Findings", stats["findings"])
+
+    if not rows:
+        with _ai_popover:
+            _render_agent_assistant([])
+        st.success("✅ No findings — everything looks good!")
+        return
+
+    # ── filters ───────────────────────────────────────────────────────────────
+    st.subheader("Filters")
+    fc1, fc2, fc3, fc4, fc5, fc6, fc7 = st.columns([1, 1, 1, 1, 1, 1, 0.22])
+
+    all_repos = sorted({row["repository"] for row in rows})
+    all_missing = sorted(
+        {f.strip() for row in rows for f in row["missing_fields"].split(",") if f.strip()}
+    )
+    all_assignees = sorted(
+        {
+            a.strip()
+            for row in rows
+            for a in row["assignees"].split(",")
+            if a.strip() and a.strip() != "(none)"
+        }
+    )
+    all_types = sorted({row["item_type"] for row in rows})
+    all_states = [s for s in _STATE_DOTS if any(row["state"] == s for row in rows)]
+    proj_labels: dict[int, str] = {}
+    for row in rows:
+        p = row["project"]
+        if p and p not in proj_labels:
+            t = row["project_title"]
+            proj_labels[p] = f"{p} - {t}" if t else str(p)
+    all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
+
+    _date_active = bool(
+        st.session_state.get("filter_date_from") or st.session_state.get("filter_date_to")
+    )
+    _date_btn_label = "📅 ●" if _date_active else "📅"
+
+    # Explicit keys keep selections alive across rescans; prune values that no
+    # longer exist in the fresh options (a stale value would raise otherwise).
+    for _fk, _fopts in (
+        ("filter_repos", all_repos),
+        ("filter_missing", all_missing),
+        ("filter_assignees", all_assignees),
+        ("filter_types", all_types),
+        ("filter_states", all_states),
+        ("filter_projects", all_proj_options),
+    ):
+        if _fk in st.session_state:
+            st.session_state[_fk] = [v for v in st.session_state[_fk] if v in _fopts]
+
+    with fc1:
+        sel_repos = st.multiselect("Repository", all_repos, key="filter_repos")
+    with fc2:
+        sel_missing = st.multiselect("Missing field", all_missing, key="filter_missing")
+    with fc3:
+        sel_assignees = st.multiselect("Assignee", all_assignees, key="filter_assignees")
+    with fc4:
+        sel_types = st.multiselect("Type", all_types, key="filter_types")
+    with fc5:
+        sel_states = st.multiselect(
+            "State", all_states, key="filter_states", format_func=_state_cell
+        )
+    with fc6:
+        sel_proj_labels = st.multiselect("Project", all_proj_options, key="filter_projects")
+    with fc7:
+        st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
+        with st.popover(
+            _date_btn_label, use_container_width=True, help="Filter by last updated date"
+        ):
+            _dc1, _dc2 = st.columns(2)
+            with _dc1:
+                date_from = st.date_input("From", value=None, key="filter_date_from")
+            with _dc2:
+                date_to = st.date_input("To", value=None, key="filter_date_to")
+
+    sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
+
+    filtered: list[FindingRow] = []
+    for row in rows:
+        if sel_repos and row["repository"] not in sel_repos:
+            continue
+        # exact membership, not substring: "assignee" must not match "target assignee",
+        # login "jan" must not match "janedoe"
+        row_missing = {part.strip() for part in row["missing_fields"].split(",")}
+        if sel_missing and not any(f in row_missing for f in sel_missing):
+            continue
+        row_assignees = {part.strip() for part in row["assignees"].split(",")}
+        if sel_assignees and not any(a in row_assignees for a in sel_assignees):
+            continue
+        if sel_types and row["item_type"] not in sel_types:
+            continue
+        if sel_states and row["state"] not in sel_states:
+            continue
+        if sel_proj_nums and row["project"] not in sel_proj_nums:
+            continue
+        if date_from or date_to:
+            raw = row["updated_at"]
+            try:
+                row_date = date.fromisoformat(raw[:10]) if raw else None
+            except ValueError:
+                row_date = None
+            if row_date is None:
+                continue
+            if date_from and row_date < date_from:
+                continue
+            if date_to and row_date > date_to:
+                continue
+        filtered.append(row)
+
+    st.caption(f"Showing **{len(filtered)}** of {len(rows)} findings")
+
+    with _ai_popover:
+        _render_agent_assistant(filtered)
+
+    # ── results table ─────────────────────────────────────────────────────────
+    st.dataframe(
+        [
+            {
+                "Project": row["project"],
+                "Repository": row["repository"],
+                "Type": row["item_type"],
+                "State": _state_cell(row["state"]),
+                "#": row["number"],
+                "Missing": row["missing_fields"],
+                "Updated": row["updated_at"],
+                "Title": row["title"],
+                "Assignees": row["assignees"],
+                "URL": row["url"],
+            }
+            for row in filtered
+        ],
+        use_container_width=True,
+        hide_index=True,
+        height=min(600, 100 + len(filtered) * 35),
+        column_config={
+            "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
+            "#": st.column_config.NumberColumn("#", format="%d", width="small"),
+            "Project": st.column_config.NumberColumn("Project", format="%d", width="small"),
+            "Type": st.column_config.TextColumn("Type", width="small"),
+            "State": st.column_config.TextColumn("State", width="small"),
+            "Missing": st.column_config.TextColumn("Missing", width="large"),
+            "Updated": st.column_config.TextColumn("Updated", width="small"),
+        },
+    )
+
+    dl1, dl2, _ = st.columns([1, 1, 1.6])
+    dl1.download_button(
+        "⬇️ Download filtered Excel",
+        _xlsx_bytes(filtered),
+        "findings.xlsx",
+        _XLSX_MIME,
+        on_click="ignore",
+    )
+    findings_html = _findings_offline_html(rows)
+    dl2.download_button(
+        "🌐 Download offline HTML report",
+        findings_html,
+        "github-audit-report.html",
+        "text/html",
+        on_click=_save_export_copy,
+        args=("github-audit-report.html", findings_html),
+        help=(
+            "Self-contained page with all scanned findings — anyone can open it "
+            "in a browser and filter, no install needed. A copy is also saved "
+            "to the app's exports folder."
+        ),
+    )
+
+    with st.expander("📊 Missing field breakdown"):
+        field_counts: dict[str, int] = {}
+        for row in rows:
+            for _f in row["missing_fields"].split(","):
+                _f = _f.strip()
+                if _f:
+                    field_counts[_f] = field_counts.get(_f, 0) + 1
+        st.bar_chart(
+            [
+                {"Field": _f, "Count": c}
+                for _f, c in sorted(field_counts.items(), key=lambda x: x[1])
+            ],
+            x="Field",
+            y="Count",
+            horizontal=True,
+        )
+
+    limitations = cast(list[str], st.session_state.limitations)
+    if limitations:
+        with st.expander(f"⚠️ {len(limitations)} scan limitation(s)"):
+            for lim in limitations:
+                st.warning(lim, icon="⚠️")
+
+
 # ── main content ──────────────────────────────────────────────────────────────
 _h1, _h2 = st.columns([7, 1])
 with _h1:
@@ -1199,187 +1739,8 @@ with _h2:
 if st.session_state.error:
     st.error(st.session_state.error)
 
-if st.session_state.rows is None:
-    with _ai_popover:
-        _render_agent_assistant([])
-    st.info(
-        "Configure settings in the sidebar, then click **▶ Run Scan** to audit "
-        "your GitHub Projects for missing fields and workflow gaps."
-    )
-    with st.expander("What does this tool check?"):
-        st.markdown("""
-- **Required fields** — Estimate, Priority, Iteration (sprint), Difficulty, Status (configurable)
-- **Assignees** — whether items are assigned and to your target users
-- **Development links** — whether issues have a linked PR or branch
-- **Project board membership** — optional check for items missing from the V2 board
-        """)
-    st.stop()
-
-rows = cast(list[FindingRow], st.session_state.rows)
-stats = cast(ScanStats, st.session_state.stats)
-
-c1, c2, c3 = st.columns(3)
-c1.metric("Issues scanned", stats["issues"])
-c2.metric("PRs scanned", stats["prs"])
-c3.metric("Findings", stats["findings"])
-
-if not rows:
-    with _ai_popover:
-        _render_agent_assistant([])
-    st.success("✅ No findings — everything looks good!")
-    st.stop()
-
-# ── filters ───────────────────────────────────────────────────────────────────
-st.subheader("Filters")
-fc1, fc2, fc3, fc4, fc5, fc6 = st.columns([1, 1, 1, 1, 1, 0.22])
-
-all_repos = sorted({row["repository"] for row in rows})
-all_missing = sorted(
-    {f.strip() for row in rows for f in row["missing_fields"].split(",") if f.strip()}
-)
-all_assignees = sorted(
-    {
-        a.strip()
-        for row in rows
-        for a in row["assignees"].split(",")
-        if a.strip() and a.strip() != "(none)"
-    }
-)
-all_types = sorted({row["item_type"] for row in rows})
-proj_labels: dict[int, str] = {}
-for row in rows:
-    p = row["project"]
-    if p and p not in proj_labels:
-        t = row["project_title"]
-        proj_labels[p] = f"{p} - {t}" if t else str(p)
-all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
-
-_date_active = bool(
-    st.session_state.get("filter_date_from") or st.session_state.get("filter_date_to")
-)
-_date_btn_label = "📅 ●" if _date_active else "📅"
-
-# Explicit keys keep selections alive across rescans; prune values that no
-# longer exist in the fresh options (a stale value would raise otherwise).
-for _fk, _fopts in (
-    ("filter_repos", all_repos),
-    ("filter_missing", all_missing),
-    ("filter_assignees", all_assignees),
-    ("filter_types", all_types),
-    ("filter_projects", all_proj_options),
-):
-    if _fk in st.session_state:
-        st.session_state[_fk] = [v for v in st.session_state[_fk] if v in _fopts]
-
-with fc1:
-    sel_repos = st.multiselect("Repository", all_repos, key="filter_repos")
-with fc2:
-    sel_missing = st.multiselect("Missing field", all_missing, key="filter_missing")
-with fc3:
-    sel_assignees = st.multiselect("Assignee", all_assignees, key="filter_assignees")
-with fc4:
-    sel_types = st.multiselect("Type", all_types, key="filter_types")
-with fc5:
-    sel_proj_labels = st.multiselect("Project", all_proj_options, key="filter_projects")
-with fc6:
-    st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
-    with st.popover(_date_btn_label, use_container_width=True, help="Filter by last updated date"):
-        _dc1, _dc2 = st.columns(2)
-        with _dc1:
-            date_from = st.date_input("From", value=None, key="filter_date_from")
-        with _dc2:
-            date_to = st.date_input("To", value=None, key="filter_date_to")
-
-sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
-
-filtered: list[FindingRow] = []
-for row in rows:
-    if sel_repos and row["repository"] not in sel_repos:
-        continue
-    # exact membership, not substring: "assignee" must not match "target assignee",
-    # login "jan" must not match "janedoe"
-    row_missing = {part.strip() for part in row["missing_fields"].split(",")}
-    if sel_missing and not any(f in row_missing for f in sel_missing):
-        continue
-    row_assignees = {part.strip() for part in row["assignees"].split(",")}
-    if sel_assignees and not any(a in row_assignees for a in sel_assignees):
-        continue
-    if sel_types and row["item_type"] not in sel_types:
-        continue
-    if sel_proj_nums and row["project"] not in sel_proj_nums:
-        continue
-    if date_from or date_to:
-        raw = row["updated_at"]
-        try:
-            row_date = date.fromisoformat(raw[:10]) if raw else None
-        except ValueError:
-            row_date = None
-        if row_date is None:
-            continue
-        if date_from and row_date < date_from:
-            continue
-        if date_to and row_date > date_to:
-            continue
-    filtered.append(row)
-
-st.caption(f"Showing **{len(filtered)}** of {len(rows)} findings")
-
-with _ai_popover:
-    _render_agent_assistant(filtered)
-
-# ── results table ─────────────────────────────────────────────────────────────
-st.dataframe(
-    [
-        {
-            "Project": row["project"],
-            "Repository": row["repository"],
-            "Type": row["item_type"],
-            "#": row["number"],
-            "Missing": row["missing_fields"],
-            "Updated": row["updated_at"],
-            "Title": row["title"],
-            "Assignees": row["assignees"],
-            "URL": row["url"],
-        }
-        for row in filtered
-    ],
-    use_container_width=True,
-    hide_index=True,
-    height=min(600, 100 + len(filtered) * 35),
-    column_config={
-        "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
-        "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-        "Project": st.column_config.NumberColumn("Project", format="%d", width="small"),
-        "Type": st.column_config.TextColumn("Type", width="small"),
-        "Missing": st.column_config.TextColumn("Missing", width="large"),
-        "Updated": st.column_config.TextColumn("Updated", width="small"),
-    },
-)
-
-st.download_button(
-    "⬇️ Download filtered Excel",
-    _xlsx_bytes(filtered),
-    "findings.xlsx",
-    _XLSX_MIME,
-    on_click="ignore",
-)
-
-with st.expander("📊 Missing field breakdown"):
-    field_counts: dict[str, int] = {}
-    for row in rows:
-        for _f in row["missing_fields"].split(","):
-            _f = _f.strip()
-            if _f:
-                field_counts[_f] = field_counts.get(_f, 0) + 1
-    st.bar_chart(
-        [{"Field": _f, "Count": c} for _f, c in sorted(field_counts.items(), key=lambda x: x[1])],
-        x="Field",
-        y="Count",
-        horizontal=True,
-    )
-
-limitations = cast(list[str], st.session_state.limitations)
-if limitations:
-    with st.expander(f"⚠️ {len(limitations)} scan limitation(s)"):
-        for lim in limitations:
-            st.warning(lim, icon="⚠️")
+_tab_findings, _tab_branches = st.tabs(["📋 Issues & PRs", "🌿 Branches"])
+with _tab_findings:
+    _render_findings_tab()
+with _tab_branches:
+    _render_branch_tab()

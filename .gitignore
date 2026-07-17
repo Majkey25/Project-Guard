@@ -11,3 +11,4 @@ dist/
 *.local.toml
 *.local.env
 .playwright-mcp/
+exports/
