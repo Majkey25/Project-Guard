@@ -54,6 +54,8 @@ def evaluate_item(
         comments=content.comments,
         comments_total_count=content.comments_total_count,
         url=content.url,
+        state=content.state,
+        is_draft=not isinstance(content, GitHubIssue) and content.is_draft,
         assignees=content.assignees,
         labels=content.labels,
         milestone=content.milestone,
