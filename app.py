@@ -51,10 +51,6 @@ st.html("""<style>
 
 
 class FindingRow(TypedDict):
-    # None when the item is not on the scanned board — a number here would be
-    # whichever project scan happened to win deduplication, i.e. noise.
-    project: int | None
-    project_title: str
     repository: str
     item_type: str
     state: str
@@ -136,8 +132,6 @@ def _date_label(value: str | None) -> str:
 _XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
 
 _XLSX_HEADERS = {
-    "project": "Project",
-    "project_title": "Project title",
     "repository": "Repository",
     "item_type": "Type",
     "state": "State",
@@ -604,13 +598,18 @@ with st.sidebar:
     scan_btn = st.button("▶ Run Scan", type="primary", width="stretch")
     if st.session_state.scan_time:
         st.caption(f"Last scan: {st.session_state.scan_time}")
-    if st.session_state.rows is not None and st.button("✕ Clear Results", width="stretch"):
+    if (st.session_state.rows is not None or st.session_state.branches is not None) and st.button(
+        "✕ Clear Results", width="stretch"
+    ):
         for k in (
             "rows",
             "findings",
             "error",
             "stats",
             "scan_time",
+            "branches",
+            "branches_error",
+            "branches_time",
             "project_ids_by_number",
             "project_fields_by_number",
             "agent_pending_project_id",
@@ -718,10 +717,7 @@ def _run_scan() -> None:
     best: dict[tuple[str, str, int], tuple[FindingRow, AuditFinding]] = {}
     for r in results:
         for f in r.findings:
-            on_board = f.project_item_id is not None
             row: FindingRow = {
-                "project": f.project_number if on_board else None,
-                "project_title": (f.project_title or "") if on_board else "",
                 "repository": f.repository.split("/")[-1],
                 "item_type": "PR" if f.item_type == "pull_request" else "Issue",
                 "state": f.display_state,
@@ -1228,6 +1224,11 @@ def _agent_reply(
 
 def _render_agent_assistant(visible_rows: list[FindingRow]) -> None:
     st.markdown("**🧠 AI Assistant**")
+    if st.session_state.rows is None or st.session_state.branches is None:
+        st.caption(
+            "The AI can only see scanned data — enable Issues/PRs **and** Branches "
+            "in 📂 Scan Scope and run one scan if you want it to work with both."
+        )
 
     all_rows = cast(list[FindingRow], st.session_state.rows or [])
     findings_store = cast(
@@ -1590,7 +1591,7 @@ def _render_findings_tab() -> None:
 
     # ── filters ───────────────────────────────────────────────────────────────
     st.subheader("Filters")
-    fc1, fc2, fc3, fc4, fc5, fc6, fc7 = st.columns([1, 1, 1, 1, 1, 1, 0.22])
+    fc1, fc2, fc3, fc4, fc5, fc6 = st.columns([1, 1, 1, 1, 1, 0.22])
 
     all_repos = sorted({row["repository"] for row in rows})
     all_missing = sorted(
@@ -1606,13 +1607,6 @@ def _render_findings_tab() -> None:
     )
     all_types = sorted({row["item_type"] for row in rows})
     all_states = [s for s in _STATE_DOTS if any(row["state"] == s for row in rows)]
-    proj_labels: dict[int, str] = {}
-    for row in rows:
-        p = row["project"]
-        if p and p not in proj_labels:
-            t = row["project_title"]
-            proj_labels[p] = f"{p} - {t}" if t else str(p)
-    all_proj_options = [proj_labels[p] for p in sorted(proj_labels)]
 
     _date_active = bool(
         st.session_state.get("filter_date_from") or st.session_state.get("filter_date_to")
@@ -1627,7 +1621,6 @@ def _render_findings_tab() -> None:
         ("filter_assignees", all_assignees),
         ("filter_types", all_types),
         ("filter_states", all_states),
-        ("filter_projects", all_proj_options),
     ):
         if _fk in st.session_state:
             st.session_state[_fk] = [v for v in st.session_state[_fk] if v in _fopts]
@@ -1645,8 +1638,6 @@ def _render_findings_tab() -> None:
             "State", all_states, key="filter_states", format_func=_state_cell
         )
     with fc6:
-        sel_proj_labels = st.multiselect("Project", all_proj_options, key="filter_projects")
-    with fc7:
         st.markdown('<div style="height:27px"></div>', unsafe_allow_html=True)
         with st.popover(
             _date_btn_label, use_container_width=True, help="Filter by last updated date"
@@ -1656,8 +1647,6 @@ def _render_findings_tab() -> None:
                 date_from = st.date_input("From", value=None, key="filter_date_from")
             with _dc2:
                 date_to = st.date_input("To", value=None, key="filter_date_to")
-
-    sel_proj_nums = {p for p, lbl in proj_labels.items() if lbl in sel_proj_labels}
 
     filtered: list[FindingRow] = []
     for row in rows:
@@ -1674,8 +1663,6 @@ def _render_findings_tab() -> None:
         if sel_types and row["item_type"] not in sel_types:
             continue
         if sel_states and row["state"] not in sel_states:
-            continue
-        if sel_proj_nums and row["project"] not in sel_proj_nums:
             continue
         if date_from or date_to:
             raw = row["updated_at"]
@@ -1700,7 +1687,6 @@ def _render_findings_tab() -> None:
     st.dataframe(
         [
             {
-                "Project": row["project"],
                 "Repository": row["repository"],
                 "Type": row["item_type"],
                 "State": _state_cell(row["state"]),
@@ -1719,7 +1705,6 @@ def _render_findings_tab() -> None:
         column_config={
             "URL": st.column_config.LinkColumn("Link", display_text="Open ↗"),
             "#": st.column_config.NumberColumn("#", format="%d", width="small"),
-            "Project": st.column_config.NumberColumn("Project", format="%d", width="small"),
             "Type": st.column_config.TextColumn("Type", width="small"),
             "State": st.column_config.TextColumn("State", width="small"),
             "Missing": st.column_config.TextColumn("Missing", width="large"),

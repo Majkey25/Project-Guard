@@ -35,8 +35,9 @@ API keys are stored in `.env` on your machine only. They are never logged or sen
 - Items not linked to a project board (optional).
 - Issues or PRs without a development link.
 - Item state shown with GitHub colors — open (green), closed (red), merged (purple), draft (gray).
-- Stale branches — separate **Branches** tab lists every branch with age, last committer,
-  and pull request status; the stale threshold is adjustable and nothing is ever deleted.
+- Stale branches — enable **Branches** in Scan Scope and the **Branches** tab lists every
+  branch with age, last committer, and pull request status; the stale threshold is
+  adjustable and nothing is ever deleted.
 - Optional date range — last 30 days or custom `from / to`.
 - One project, many projects, or all projects in an organization.
 - One repo, many repos, or all organization repos.
@@ -226,6 +227,7 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `INCLUDE_ISSUES` | Scan open issues | `true` |
 | `INCLUDE_CLOSED_ISSUES` | Also scan closed issues | `false` |
 | `INCLUDE_PULL_REQUESTS` | Scan open PRs | `true` |
+| `INCLUDE_BRANCHES` | Also audit branches during Run Scan | `true` |
 | `INCLUDE_CLOSED_PULL_REQUESTS` | Also scan closed/merged PRs | `false` |
 | `GITHUB_UPDATED_FROM` | `YYYY-MM-DD` lower bound | — |
 | `GITHUB_UPDATED_TO` | `YYYY-MM-DD` upper bound | — |
