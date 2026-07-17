@@ -333,8 +333,9 @@ def test_fetch_all_repositories() -> None:
         "organization": {
             "repositories": _page(
                 [
-                    {"nameWithOwner": "org/repo-a", "isArchived": False},
-                    {"nameWithOwner": "org/repo-b", "isArchived": True},
+                    {"nameWithOwner": "org/repo-a", "isArchived": False, "isFork": False},
+                    {"nameWithOwner": "org/repo-b", "isArchived": True, "isFork": False},
+                    {"nameWithOwner": "org/repo-fork", "isArchived": False, "isFork": True},
                 ]
             )
         }

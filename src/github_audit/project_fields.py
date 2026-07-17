@@ -232,6 +232,7 @@ query Repositories($org: String!, $after: String) {
       nodes {
         nameWithOwner
         isArchived
+        isFork
       }
       pageInfo { hasNextPage endCursor }
     }
@@ -459,7 +460,9 @@ def fetch_all_repositories(client: GitHubClient, org: str) -> list[str]:
         connection = as_object(organization.get("repositories"), "organization.repositories")
         for node in as_list(connection.get("nodes"), "organization.repositories.nodes"):
             repository = as_object(node, "repository")
-            if repository.get("isArchived") is not True:
+            # Forks carry upstream branches/history — noise for an org audit.
+            # An explicit allowlist entry still includes a fork on purpose.
+            if repository.get("isArchived") is not True and repository.get("isFork") is not True:
                 repositories.append(
                     required_str(repository.get("nameWithOwner"), "repository.nameWithOwner")
                 )

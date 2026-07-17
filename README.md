@@ -213,7 +213,7 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `GITHUB_INCLUDE_ALL_PROJECTS` | Scan every org project | `false` |
 | `GITHUB_INCLUDE_CLOSED_PROJECTS` | Include closed boards | `false` |
 | `GITHUB_REPOSITORY_ALLOWLIST` | Repos to scan (comma-separated) | — |
-| `GITHUB_INCLUDE_ALL_REPOSITORIES` | Scan every org repo | `false` |
+| `GITHUB_INCLUDE_ALL_REPOSITORIES` | Scan every org repo (archived and forked repos are skipped) | `false` |
 | `GITHUB_REPOSITORY_DENYLIST` | Repos to always skip | — |
 | `TARGET_ASSIGNEES` | Usernames to watch for target-assignee check | — |
 | `REQUIRED_PROJECT_FIELDS` | Required V2 field names | — |
