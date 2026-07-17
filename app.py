@@ -254,6 +254,7 @@ session_defaults: dict[str, object | None] = {
     "scan_include_closed_issues": _bool("INCLUDE_CLOSED_ISSUES", "false"),
     "scan_include_pull_requests": _bool("INCLUDE_PULL_REQUESTS", "true"),
     "scan_include_closed_pull_requests": _bool("INCLUDE_CLOSED_PULL_REQUESTS", "false"),
+    "scan_include_branches": _bool("INCLUDE_BRANCHES", "true"),
 }
 for _k, _v in session_defaults.items():
     if _k not in st.session_state:
@@ -408,6 +409,15 @@ with st.sidebar:
             key="scan_include_closed_pull_requests",
             disabled=not inc_prs,
             help="Also scan PRs that are closed or merged. By default only open PRs are scanned.",
+        )
+        inc_branches = st.checkbox(
+            "Branches",
+            value=_bool("INCLUDE_BRANCHES", "true"),
+            key="scan_include_branches",
+            help=(
+                "Audit repository branches (age, last committer, PR status) for "
+                "cleanup candidates. Results appear in the 🌿 Branches tab."
+            ),
         )
 
     today = date.today()
@@ -572,6 +582,7 @@ with st.sidebar:
                 "INCLUDE_CLOSED_ISSUES": "true" if inc_closed else "false",
                 "INCLUDE_PULL_REQUESTS": "true" if inc_prs else "false",
                 "INCLUDE_CLOSED_PULL_REQUESTS": "true" if inc_closed_prs else "false",
+                "INCLUDE_BRANCHES": "true" if inc_branches else "false",
                 "GITHUB_INCLUDE_ALL_REPOSITORIES": "true" if inc_all_repos else "false",
                 "GITHUB_REPOSITORY_ALLOWLIST": repo_allowlist,
                 "GITHUB_REPOSITORY_DENYLIST": repo_denylist,
@@ -753,17 +764,82 @@ def _run_scan() -> None:
     st.session_state.agent_pending_content_id = None
 
 
+def _is_stale(row: BranchRow, threshold: int) -> bool:
+    return row["age_days"] >= threshold and row["pr_state"] != "open"
+
+
+def _pr_label(state: str, is_draft: bool) -> str:
+    return "draft" if is_draft and state.upper() == "OPEN" else state.lower()
+
+
+def _branch_rows(branches: list[BranchInfo]) -> list[BranchRow]:
+    today = date.today()
+    branch_rows: list[BranchRow] = []
+    for branch in branches:
+        commit_date = parse_github_date(branch.last_commit_date)
+        prs = ", ".join(
+            f"#{pr.number} ({_pr_label(pr.state, pr.is_draft)})" for pr in branch.pull_requests
+        )
+        if branch.pull_requests_total > len(branch.pull_requests):
+            prs += f", +{branch.pull_requests_total - len(branch.pull_requests)} more"
+        branch_rows.append(
+            BranchRow(
+                repository=branch.repository.split("/")[-1],
+                branch=branch.name,
+                age_days=(today - commit_date).days if commit_date else -1,
+                last_commit=_date_label(branch.last_commit_date),
+                committer=branch.last_committer or "(unknown)",
+                pr_state=branch.pr_state,
+                prs=prs or "(none)",
+                url=branch.url,
+            )
+        )
+    branch_rows.sort(key=lambda r: r["age_days"], reverse=True)
+    return branch_rows
+
+
+def _run_branch_scan() -> None:
+    try:
+        settings = Settings.model_validate(
+            {
+                "github_token": token,
+                "github_org": org,
+                # branch audit needs no project boards — skip project validation
+                "my_work_mode": True,
+                "require_target_assignee": False,
+                "github_include_all_repositories": inc_all_repos,
+                "github_repository_allowlist_raw": "" if inc_all_repos else _csv(repo_allowlist),
+                "github_repository_denylist_raw": _csv(repo_denylist),
+            }
+        )
+    except ValidationError as exc:
+        msgs = "; ".join(e["msg"] for e in exc.errors())
+        st.session_state.branches_error = f"Configuration error: {msgs}"
+        return
+    try:
+        with GitHubClient(settings.github_token) as client:
+            repositories = discover_repositories(client, settings)
+            branches = fetch_branches(client, repositories)
+    except GitHubError as exc:
+        st.session_state.branches_error = str(exc)
+        return
+    # Default branches (main/master) are never cleanup candidates.
+    st.session_state.branches = _branch_rows([b for b in branches if not b.is_default])
+    st.session_state.branches_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    st.session_state.branches_error = None
+
+
 def _scan_request_error() -> str | None:
     if not token.strip():
         return "GitHub token is required."
     if not org.strip():
         return "Organization name is required."
-    if not include_all_projects and not project_numbers.strip():
+    if not inc_issues and not inc_prs and not inc_branches:
+        return "Enable at least one of Issues, Pull Requests, or Branches in 📂 Scan Scope."
+    if (inc_issues or inc_prs) and not include_all_projects and not project_numbers.strip():
         return "At least one project number is required."
     if not inc_all_repos and not repo_allowlist.strip():
         return "Either enable 'All org repositories' or enter a repository allowlist."
-    if not inc_issues and not inc_prs:
-        return "Enable at least one of Issues or Pull Requests."
     return None
 
 
@@ -775,8 +851,12 @@ if scan_btn:
         st.session_state.error = scan_error
     else:
         st.session_state.error = None
-        with st.spinner("Connecting to GitHub and scanning — this may take a minute…"):
-            _run_scan()
+        if inc_issues or inc_prs:
+            with st.spinner("Scanning issues and pull requests — this may take a minute…"):
+                _run_scan()
+        if inc_branches:
+            with st.spinner("Fetching branches from GitHub…"):
+                _run_branch_scan()
 
 if st.session_state.agent_pending_scan:
     st.session_state.agent_pending_scan = False
@@ -1030,6 +1110,9 @@ def _agent_reply(
                         len(rows_for_summary), len(filtered_for_summary), stats_for_summary
                     )
                 ]
+                branches_ctx = _branches_context()
+                if branches_ctx:
+                    ctx_parts.append(branches_ctx)
                 stored_history: list[ModelMessage] = cast(
                     list[ModelMessage],
                     st.session_state.get("chat_message_history") or [],
@@ -1227,19 +1310,38 @@ def _state_cell(state: str) -> str:
 
 
 # ── offline HTML export ───────────────────────────────────────────────────────
-_EXPORTS_DIR = Path(__file__).parent / "exports"
+def _save_via_dialog(default_name: str, content: str) -> None:
+    """Native Windows Save As dialog. The app runs locally, so the dialog opens
+    on the user's machine — browser downloads are avoided entirely because some
+    browsers (Brave) save them without the file extension."""
+    import tkinter as tk
+    from tkinter import filedialog
 
-
-def _save_export_copy(file_name: str, content: str) -> None:
-    """Keep a reliable copy on disk — some browsers (webviews, Brave) mangle
-    the downloaded file name or extension."""
     try:
-        _EXPORTS_DIR.mkdir(exist_ok=True)
-        path = _EXPORTS_DIR / file_name
-        path.write_text(content, encoding="utf-8")
-        st.toast(f"Copy saved to {path}", icon="💾")
+        root = tk.Tk()
+    except tk.TclError as exc:
+        st.error(f"Could not open the save dialog: {exc}")
+        return
+    try:
+        root.withdraw()
+        root.attributes("-topmost", True)  # pyright: ignore[reportUnknownMemberType]
+        path = filedialog.asksaveasfilename(
+            parent=root,
+            title="Save HTML report",
+            initialfile=default_name,
+            defaultextension=".html",
+            filetypes=[("HTML report", "*.html"), ("All files", "*.*")],
+        )
+    finally:
+        root.destroy()
+    if not path:
+        return  # user cancelled the dialog
+    try:
+        Path(path).write_text(content, encoding="utf-8")
     except OSError as exc:
-        st.toast(f"Could not save a local copy: {exc}", icon="⚠️")
+        st.error(f"Could not save: {exc}")
+        return
+    st.success(f"Saved: {path}")
 
 
 def _findings_offline_html(all_rows: list[FindingRow]) -> str:
@@ -1310,114 +1412,62 @@ def _branches_offline_html(branch_rows: list[BranchRow], threshold: int) -> str:
 
 
 # ── branch audit ──────────────────────────────────────────────────────────────
-def _is_stale(row: BranchRow, threshold: int) -> bool:
-    return row["age_days"] >= threshold and row["pr_state"] != "open"
+_BRANCH_CONTEXT_LIMIT = 60
 
 
-def _pr_label(state: str, is_draft: bool) -> str:
-    return "draft" if is_draft and state.upper() == "OPEN" else state.lower()
-
-
-def _branch_rows(branches: list[BranchInfo]) -> list[BranchRow]:
-    today = date.today()
-    branch_rows: list[BranchRow] = []
-    for branch in branches:
-        commit_date = parse_github_date(branch.last_commit_date)
-        prs = ", ".join(
-            f"#{pr.number} ({_pr_label(pr.state, pr.is_draft)})" for pr in branch.pull_requests
+def _branches_context() -> str | None:
+    """Compact branch-audit summary for the AI assistant context."""
+    branch_rows = cast(list[BranchRow] | None, st.session_state.branches)
+    if branch_rows is None:
+        return None
+    threshold = int(st.session_state.get("branch_stale_threshold", 30))
+    stale_count = sum(1 for row in branch_rows if _is_stale(row, threshold))
+    lines = [
+        f"Branch audit: {len(branch_rows)} branches scanned, {stale_count} stale "
+        f"(no open PR and last commit older than {threshold} days). "
+        "Oldest first (default branches excluded):"
+    ]
+    for row in branch_rows[:_BRANCH_CONTEXT_LIMIT]:
+        marker = " [STALE]" if _is_stale(row, threshold) else ""
+        lines.append(
+            f"- {row['repository']}/{row['branch']}: {row['age_days']}d old, last commit "
+            f"{row['last_commit']} by {row['committer']}, PRs: {row['prs']}{marker}"
         )
-        if branch.pull_requests_total > len(branch.pull_requests):
-            prs += f", +{branch.pull_requests_total - len(branch.pull_requests)} more"
-        branch_rows.append(
-            BranchRow(
-                repository=branch.repository.split("/")[-1],
-                branch=branch.name,
-                age_days=(today - commit_date).days if commit_date else -1,
-                last_commit=_date_label(branch.last_commit_date),
-                committer=branch.last_committer or "(unknown)",
-                pr_state=branch.pr_state,
-                prs=prs or "(none)",
-                url=branch.url,
-            )
-        )
-    branch_rows.sort(key=lambda r: r["age_days"], reverse=True)
-    return branch_rows
-
-
-def _run_branch_scan() -> None:
-    try:
-        settings = Settings.model_validate(
-            {
-                "github_token": token,
-                "github_org": org,
-                # branch audit needs no project boards — skip project validation
-                "my_work_mode": True,
-                "require_target_assignee": False,
-                "github_include_all_repositories": inc_all_repos,
-                "github_repository_allowlist_raw": "" if inc_all_repos else _csv(repo_allowlist),
-                "github_repository_denylist_raw": _csv(repo_denylist),
-            }
-        )
-    except ValidationError as exc:
-        msgs = "; ".join(e["msg"] for e in exc.errors())
-        st.session_state.branches_error = f"Configuration error: {msgs}"
-        return
-    try:
-        with GitHubClient(settings.github_token) as client:
-            repositories = discover_repositories(client, settings)
-            branches = fetch_branches(client, repositories)
-    except GitHubError as exc:
-        st.session_state.branches_error = str(exc)
-        return
-    # Default branches (main/master) are never cleanup candidates.
-    st.session_state.branches = _branch_rows([b for b in branches if not b.is_default])
-    st.session_state.branches_time = datetime.now().strftime("%Y-%m-%d %H:%M")
-    st.session_state.branches_error = None
+    if len(branch_rows) > _BRANCH_CONTEXT_LIMIT:
+        lines.append(f"... and {len(branch_rows) - _BRANCH_CONTEXT_LIMIT} more branches")
+    return "\n".join(lines)
 
 
 def _render_branch_tab() -> None:
-    bc1, bc2, bc3 = st.columns([1.2, 1, 2.8])
+    bc1, bc2 = st.columns([1, 3])
     with bc1:
-        st.write("")
-        branch_btn = st.button("▶ Scan Branches", type="primary", width="stretch")
-    with bc2:
         threshold = int(
             st.number_input(
                 "Stale after (days)",
                 min_value=1,
                 max_value=3650,
                 value=30,
+                key="branch_stale_threshold",
                 help=(
                     "A branch counts as stale when its last commit is older than this "
                     "and it has no open pull request. Adjust freely — nothing is deleted."
                 ),
             )
         )
-    with bc3:
+    with bc2:
         st.write("")
         st.caption(
             "Audits branches in the configured repository scope. Default branches are "
             "excluded. Decision support only — this never deletes anything."
         )
 
-    if branch_btn:
-        if not token.strip() or not org.strip():
-            st.session_state.branches_error = "GitHub token and organization are required."
-        elif not inc_all_repos and not repo_allowlist.strip():
-            st.session_state.branches_error = (
-                "Either enable 'All org repositories' or enter a repository allowlist."
-            )
-        else:
-            with st.spinner("Fetching branches from GitHub…"):
-                _run_branch_scan()
-
     if st.session_state.branches_error:
         st.error(st.session_state.branches_error)
     branch_rows = cast(list[BranchRow] | None, st.session_state.branches)
     if branch_rows is None:
         st.info(
-            "Click **▶ Scan Branches** to list all branches with their age, last "
-            "committer, and pull request status — and spot stale ones."
+            "Enable **Branches** in 📂 Scan Scope and click **▶ Run Scan** to list all "
+            "branches with their age, last committer, and pull request status."
         )
         return
 
@@ -1494,19 +1544,16 @@ def _render_branch_tab() -> None:
             "Last commit": st.column_config.TextColumn("Last commit", width="small"),
         },
     )
-    branches_html = _branches_offline_html(branch_rows, threshold)
-    st.download_button(
-        "🌐 Download offline HTML report",
-        branches_html,
-        "github-audit-branches.html",
-        "text/html",
-        on_click=_save_export_copy,
-        args=("github-audit-branches.html", branches_html),
+    if st.button(
+        "🌐 Save offline HTML report…",
         help=(
-            "Self-contained page with all scanned branches — open and filter anywhere. "
-            "A copy is also saved to the app's exports folder."
+            "Self-contained page with all scanned branches — open and filter "
+            "anywhere. Opens a Save As dialog."
         ),
-    )
+    ):
+        _save_via_dialog(
+            "github-audit-branches.html", _branches_offline_html(branch_rows, threshold)
+        )
 
 
 # ── findings tab ──────────────────────────────────────────────────────────────
@@ -1688,20 +1735,14 @@ def _render_findings_tab() -> None:
         _XLSX_MIME,
         on_click="ignore",
     )
-    findings_html = _findings_offline_html(rows)
-    dl2.download_button(
-        "🌐 Download offline HTML report",
-        findings_html,
-        "github-audit-report.html",
-        "text/html",
-        on_click=_save_export_copy,
-        args=("github-audit-report.html", findings_html),
+    if dl2.button(
+        "🌐 Save offline HTML report…",
         help=(
             "Self-contained page with all scanned findings — anyone can open it "
-            "in a browser and filter, no install needed. A copy is also saved "
-            "to the app's exports folder."
+            "in a browser and filter, no install needed. Opens a Save As dialog."
         ),
-    )
+    ):
+        _save_via_dialog("github-audit-report.html", _findings_offline_html(rows))
 
     with st.expander("📊 Missing field breakdown"):
         field_counts: dict[str, int] = {}

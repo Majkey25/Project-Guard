@@ -43,10 +43,11 @@ API keys are stored in `.env` on your machine only. They are never logged or sen
 
 ## Offline Export
 
-Both tabs offer **🌐 Download offline HTML report** — a single self-contained `.html`
-file with the full scan embedded. Anyone can open it by double-click in a browser and
-search, filter (repository, state, assignee, missing field, …), and sort — no Streamlit,
-terminal, network, or setup needed. The Excel download is still available next to it.
+Both tabs offer **🌐 Save offline HTML report…** — a single self-contained `.html`
+file with the full scan embedded, saved through a native Save As dialog. Anyone can
+open it by double-click in a browser and search, filter (repository, state, assignee,
+missing field, …), and sort — no Streamlit, terminal, network, or setup needed.
+The Excel download is still available next to it.
 
 ## Setup Guide — Step by Step
 
