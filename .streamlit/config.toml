@@ -1,0 +1,7 @@
+# Keep the app local: bind to this machine only (no LAN exposure, no public-IP lookup)
+# and send no usage statistics to Streamlit.
+[server]
+address = "localhost"
+
+[browser]
+gatherUsageStats = false

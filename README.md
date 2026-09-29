@@ -28,6 +28,8 @@ Outbound connections are only ever made to:
 
 API keys are stored in `.env` on your machine only. They are never logged or sent anywhere other than the endpoint you configure.
 
+Streamlit's own usage statistics are switched off, and the app binds to `localhost` only, in [`.streamlit/config.toml`](.streamlit/config.toml). Start it from the repository root so that file applies.
+
 ## What It Checks
 
 - Missing Project V2 fields — `Estimate`, `Priority`, `Status`, `Iteration`, etc.
