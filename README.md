@@ -21,14 +21,15 @@ It answers one practical question:
 
 The application runs on your machine and does not create an account with the
 maintainer. Streamlit usage statistics are disabled. Scanning contacts GitHub;
-the optional AI assistant can send repository content and your messages to the
+optional AI features can send repository content and your messages to the
 LLM endpoint you configure.
 
 During scans and assistant use, outbound connections include:
 
 1. **GitHub services** — API scans use `GITHUB_TOKEN`; optional browser discovery
    opens GitHub project pages in a local browser profile.
-2. **Your LLM endpoint** — only when you open the AI assistant and send a message
+2. **Your LLM endpoint** — for requested AI actions, including suggestions,
+   explanations, triage, and assistant messages.
 
 Saved API keys are stored in `.env` on your machine. GitHub requests use your
 GitHub token; AI requests use the key for the selected endpoint. Use only an
@@ -183,7 +184,8 @@ LLM_PROVIDER=ollama
 LLM_MODEL_NAME=llama3.2
 ```
 
-Requires [Ollama](https://ollama.com) running locally (`ollama serve`). Data never leaves your machine.
+Requires [Ollama](https://ollama.com) running locally (`ollama serve`). AI requests
+use the configured local endpoint; GitHub scanning still contacts GitHub.
 
 ### Cloud providers
 
