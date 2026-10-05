@@ -6,6 +6,7 @@ from concurrent.futures import Future
 from contextlib import aclosing
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from hashlib import sha256
 from threading import Lock
 from typing import TYPE_CHECKING
 from uuid import uuid4
@@ -33,6 +34,7 @@ from github_audit.models import (
     AuditResult,
     PendingWrite,
     ProjectFieldDefinition,
+    ProjectItem,
 )
 from github_audit.project_fields import (
     fetch_assignable_users,
@@ -73,6 +75,11 @@ def _empty_message_history() -> list[ModelMessage]:
     return []
 
 
+def _settings_scope(settings: Settings) -> bytes:
+    # Include credentials and provider settings without retaining or logging their plaintext.
+    return sha256(settings.model_dump_json().encode("utf-8")).digest()
+
+
 @dataclass(frozen=True)
 class ChatResult:
     conversation_id: str
@@ -89,6 +96,7 @@ class ConversationState:
     pending_content_id: str | None = None
     message_history: list[ModelMessage] = field(default_factory=_empty_message_history)
     touched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
+    scope_key: bytes | None = None
 
 
 @dataclass(frozen=True)
@@ -113,16 +121,22 @@ class ConversationStore:
         self._lock = Lock()
         self._items: dict[str, ConversationState] = {}
 
-    def get(self, conversation_id: str | None) -> tuple[str, ConversationState]:
+    def get(
+        self, conversation_id: str | None, *, scope_key: bytes | None = None
+    ) -> tuple[str, ConversationState]:
         now = datetime.now(UTC)
         with self._lock:
             self._prune(now)
             key = conversation_id or uuid4().hex
             state = self._items.get(key)
             if state is None:
-                state = ConversationState()
+                state = ConversationState(scope_key=scope_key)
                 self._items[key] = state
                 self._prune_to_limit()
+            elif state.scope_key != scope_key:
+                raise ChatInputError(
+                    "Configuration changed for this conversation. Start a new conversation."
+                )
             state.touched_at = now
             return key, state
 
@@ -144,8 +158,10 @@ class ProjectGuardChatService:
     def __init__(self) -> None:
         self._sessions = ConversationStore()
         self._snapshot: ProjectSnapshot | None = None
+        self._snapshot_scope: bytes | None = None
         self._snapshot_lock = Lock()
         self._snapshot_refresh: Future[ProjectSnapshot] | None = None
+        self._snapshot_refresh_scope: bytes | None = None
 
     def status(self) -> dict[str, object]:
         try:
@@ -182,7 +198,7 @@ class ProjectGuardChatService:
         if not message:
             raise ChatInputError("message is empty")
         settings = load_settings()
-        session_id, state = self._sessions.get(conversation_id)
+        session_id, state = self._sessions.get(conversation_id, scope_key=_settings_scope(settings))
         if should_apply_now(message):
             if context and state.pending_writes:
                 # The queued writes belong to one item; confirming while a different
@@ -229,17 +245,18 @@ class ProjectGuardChatService:
             raise ChatInputError("message is empty")
         if context:
             return None
+        settings = load_settings()
+        scope_key = _settings_scope(settings)
         if conversation_id is None:
             # a brand-new conversation cannot have queued writes; don't create a
             # session here or the reply() fallback would create a second, orphaned one
             if should_apply_now(message):
                 return None
-            session_id, state = self._sessions.get(None)
+            session_id, state = self._sessions.get(None, scope_key=scope_key)
         else:
-            session_id, state = self._sessions.get(conversation_id)
+            session_id, state = self._sessions.get(conversation_id, scope_key=scope_key)
             if should_apply_now(message):
                 return None
-        settings = load_settings()
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
         snapshot = self._scan_snapshot(settings)
@@ -395,31 +412,41 @@ class ProjectGuardChatService:
 
     def _scan_snapshot(self, settings: Settings) -> ProjectSnapshot:
         now = datetime.now(UTC)
+        scope_key = _settings_scope(settings)
         with self._snapshot_lock:
-            if self._snapshot is not None and now - self._snapshot.created_at < timedelta(
-                seconds=60
+            if (
+                self._snapshot is not None
+                and self._snapshot_scope == scope_key
+                and now - self._snapshot.created_at < timedelta(seconds=60)
             ):
                 return self._snapshot
             in_flight = self._snapshot_refresh
-            am_leader = in_flight is None
+            am_leader = in_flight is None or self._snapshot_refresh_scope != scope_key
             if am_leader:
                 in_flight = self._snapshot_refresh = Future()
+                self._snapshot_refresh_scope = scope_key
+        assert in_flight is not None
         if not am_leader:
             # Someone else is already refreshing; wait on their result instead of
             # starting a second full scan and instead of blocking everyone else's
             # unrelated /chat and /context requests behind this thread's lock.
-            assert in_flight is not None
             return in_flight.result()
         try:
             snapshot = self._run_scan(settings, now)
         except BaseException as exc:
             with self._snapshot_lock:
-                self._snapshot_refresh = None
+                if self._snapshot_refresh is in_flight:
+                    self._snapshot_refresh = None
+                    self._snapshot_refresh_scope = None
             in_flight.set_exception(exc)
             raise
         with self._snapshot_lock:
-            self._snapshot = snapshot
-            self._snapshot_refresh = None
+            # A prior scope or invalidated refresh must not replace the current snapshot.
+            if self._snapshot_refresh is in_flight:
+                self._snapshot = snapshot
+                self._snapshot_scope = scope_key
+                self._snapshot_refresh = None
+                self._snapshot_refresh_scope = None
         in_flight.set_result(snapshot)
         return snapshot
 
@@ -436,10 +463,17 @@ class ProjectGuardChatService:
                 include_closed_pull_requests=settings.include_closed_pull_requests,
                 include_unassigned=settings.include_unassigned,
             )
+            project_items: dict[int, list[ProjectItem]] = {}
             discoveries = discover_all(
-                client, settings, repositories=repositories, searched_items=searched_items
+                client,
+                settings,
+                repositories=repositories,
+                searched_items=searched_items,
+                project_items_by_number=project_items,
             )
-            audits = scan_all(client, settings, discoveries, searched_items)
+            audits = scan_all(
+                client, settings, discoveries, searched_items, project_items_by_number=project_items
+            )
         findings = {
             _finding_key(finding): finding for audit in audits for finding in audit.findings
         }
@@ -455,6 +489,9 @@ class ProjectGuardChatService:
     def _clear_snapshot(self) -> None:
         with self._snapshot_lock:
             self._snapshot = None
+            self._snapshot_scope = None
+            self._snapshot_refresh = None
+            self._snapshot_refresh_scope = None
 
 
 def _scan_context(audits: list[AuditResult]) -> str:

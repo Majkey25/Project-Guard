@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime
 
 from github_audit.config import Settings
@@ -24,24 +25,26 @@ def scan_all(
     settings: Settings,
     discoveries: list[DiscoveryResult],
     searched_items: list[GitHubContent] | None = None,
+    *,
+    project_items_by_number: Mapping[int, list[ProjectItem]] | None = None,
 ) -> list[AuditResult]:
+    """Reuse only items captured during this operation with the same client and settings."""
     if not discoveries:
         return []
     if searched_items is None:
         searched_items = _search_items(client, settings, discoveries[0].repositories)
-    project_items_by_number: dict[int, list[ProjectItem]] = {}
+    items_by_number = dict(project_items_by_number or {})
     known_project_content_ids: set[str] | None = None
     if settings.require_project_item and len(discoveries) > 1:
-        project_items_by_number = {
-            discovery.project_number: fetch_project_items(
-                client, settings.github_org, discovery.project_number
-            )
-            for discovery in discoveries
-        }
+        for discovery in discoveries:
+            if discovery.project_number not in items_by_number:
+                items_by_number[discovery.project_number] = fetch_project_items(
+                    client, settings.github_org, discovery.project_number
+                )
         known_project_content_ids = {
             item.content_id
-            for project_items in project_items_by_number.values()
-            for item in project_items
+            for discovery in discoveries
+            for item in items_by_number[discovery.project_number]
             if item.content_id is not None
         }
     return [
@@ -50,7 +53,7 @@ def scan_all(
             settings,
             discovery,
             searched_items,
-            project_items=project_items_by_number.get(discovery.project_number),
+            project_items=items_by_number.get(discovery.project_number),
             known_project_content_ids=known_project_content_ids,
         )
         for discovery in discoveries

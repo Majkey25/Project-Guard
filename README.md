@@ -154,6 +154,11 @@ uv run github-audit-api --host 127.0.0.1 --port 8010
 
 API URL at `http://127.0.0.1:8010/chat`. The endpoint accepts `POST /chat?stream=true` with `prompt` or `message`, streams `data: {"delta": ...}` chunks for general chat, sends a final JSON payload, then `data: [DONE]`. `GET /status` and `GET /context` are also available.
 
+After changing API configuration, start a new conversation. The API refreshes
+the affected scan cache and rejects old conversation IDs before using their
+history or queued writes with the new configuration. Requests already running
+may finish with the configuration they started with.
+
 ## Sidebar Settings
 
 | Section | Setting | What it does |

@@ -29,6 +29,7 @@ from github_audit.models import (
     BranchInfo,
     PendingWrite,
     ProjectFieldDefinition,
+    ProjectItem,
 )
 from github_audit.offline_export import OfflineColumn, render_offline_html
 from github_audit.project_fields import (
@@ -696,10 +697,17 @@ def _run_scan() -> None:
                 include_closed_pull_requests=settings.include_closed_pull_requests,
                 include_unassigned=settings.include_unassigned,
             )
+            project_items: dict[int, list[ProjectItem]] = {}
             discoveries = discover_all(
-                client, settings, repositories=repositories, searched_items=searched_items
+                client,
+                settings,
+                repositories=repositories,
+                searched_items=searched_items,
+                project_items_by_number=project_items,
             )
-            results = scan_all(client, settings, discoveries, searched_items)
+            results = scan_all(
+                client, settings, discoveries, searched_items, project_items_by_number=project_items
+            )
     except GitHubError as exc:
         st.session_state.error = str(exc)
         # stale findings must not stay addressable by the write agent after a failed scan
