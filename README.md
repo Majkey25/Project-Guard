@@ -19,14 +19,28 @@ It answers one practical question:
 
 ## Privacy
 
-This tool runs **100% locally** on your machine. No telemetry. No accounts.
+The application runs on your machine and does not create an account with the
+maintainer. Streamlit usage statistics are disabled. Scanning contacts GitHub;
+optional AI features can send repository content and your messages to the
+LLM endpoint you configure.
 
-Outbound connections are only ever made to:
+During scans and assistant use, outbound connections include:
 
-1. **GitHub API** — to scan your issues and PRs (uses `GITHUB_TOKEN`)
-2. **Your LLM endpoint** — only when you open the AI assistant and send a message
+1. **GitHub services** — API scans use `GITHUB_TOKEN`; optional browser discovery
+   opens GitHub project pages in a local browser profile.
+2. **Your LLM endpoint** — for requested AI actions, including suggestions,
+   explanations, triage, and assistant messages.
 
-API keys are stored in `.env` on your machine only. They are never logged or sent anywhere other than the endpoint you configure.
+Saved API keys are stored in `.env` on your machine. GitHub requests use your
+GitHub token; AI requests use the key for the selected endpoint. Use only an
+endpoint you trust and are authorized to share repository data with. Your
+provider's own privacy, retention, and pricing terms apply.
+
+To remove saved local information, delete the corresponding `.env` values and
+downloaded reports. Browser discovery uses a temporary profile that is removed
+after its browser closes. Revoke unwanted tokens or API keys with their provider.
+Removing local files does not erase GitHub records or requests already processed
+by a cloud provider.
 
 Streamlit's own usage statistics are switched off, and the app binds to `localhost` only, in [`.streamlit/config.toml`](.streamlit/config.toml). Start it from the repository root so that file applies.
 
@@ -170,7 +184,8 @@ LLM_PROVIDER=ollama
 LLM_MODEL_NAME=llama3.2
 ```
 
-Requires [Ollama](https://ollama.com) running locally (`ollama serve`). Data never leaves your machine.
+Requires [Ollama](https://ollama.com) running locally (`ollama serve`). AI requests
+use the configured local endpoint; GitHub scanning still contacts GitHub.
 
 ### Cloud providers
 
