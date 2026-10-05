@@ -306,7 +306,9 @@ Opens a temporary browser profile and scrapes the visible GitHub Project table. 
 
 ## Releases
 
-No GitHub release has been published yet.
+A historical [v0.9.5 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.5)
+is available with no uploaded binary or package assets. Use the current `main`
+branch for the source changes described here.
 
 Before cutting a release, run:
 
