@@ -12,7 +12,7 @@ from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import suggest_for_finding
 from github_audit.logging import configure_logging
-from github_audit.models import AuditFinding, AuditResult
+from github_audit.models import AuditFinding, AuditResult, ProjectItem
 from github_audit.project_fields import search_items
 from github_audit.report import (
     apply_text,
@@ -113,13 +113,23 @@ def main(argv: list[str] | None = None) -> int:
                 include_closed_pull_requests=settings.include_closed_pull_requests,
                 include_unassigned=settings.include_unassigned,
             )
+            # Write planning keeps its existing fresh read after discovery.
+            project_items: dict[int, list[ProjectItem]] | None = (
+                None if args.command == "apply" else {}
+            )
             discoveries = discover_all(
-                client, settings, repositories=repositories, searched_items=searched_items
+                client,
+                settings,
+                repositories=repositories,
+                searched_items=searched_items,
+                project_items_by_number=project_items,
             )
             if args.command == "apply" and len(discoveries) != 1:
                 msg = "apply supports one project; set GITHUB_PROJECT_NUMBER to one project number"
                 raise ValueError(msg)
-            audits = scan_all(client, settings, discoveries, searched_items)
+            audits = scan_all(
+                client, settings, discoveries, searched_items, project_items_by_number=project_items
+            )
             audit = merge_audits(audits)
             if args.command == "scan":
                 if args.markdown:

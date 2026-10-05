@@ -33,6 +33,7 @@ from github_audit.models import (
     AuditResult,
     PendingWrite,
     ProjectFieldDefinition,
+    ProjectItem,
 )
 from github_audit.project_fields import (
     fetch_assignable_users,
@@ -436,10 +437,17 @@ class ProjectGuardChatService:
                 include_closed_pull_requests=settings.include_closed_pull_requests,
                 include_unassigned=settings.include_unassigned,
             )
+            project_items: dict[int, list[ProjectItem]] = {}
             discoveries = discover_all(
-                client, settings, repositories=repositories, searched_items=searched_items
+                client,
+                settings,
+                repositories=repositories,
+                searched_items=searched_items,
+                project_items_by_number=project_items,
             )
-            audits = scan_all(client, settings, discoveries, searched_items)
+            audits = scan_all(
+                client, settings, discoveries, searched_items, project_items_by_number=project_items
+            )
         findings = {
             _finding_key(finding): finding for audit in audits for finding in audit.findings
         }

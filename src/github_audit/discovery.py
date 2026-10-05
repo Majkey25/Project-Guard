@@ -2,7 +2,13 @@ from __future__ import annotations
 
 from github_audit.config import Settings
 from github_audit.github_client import GitHubClient, required_int, required_str
-from github_audit.models import DiscoveryResult, GitHubContent, GitHubIssue, GitHubPullRequest
+from github_audit.models import (
+    DiscoveryResult,
+    GitHubContent,
+    GitHubIssue,
+    GitHubPullRequest,
+    ProjectItem,
+)
 from github_audit.project_fields import (
     fetch_project_fields,
     fetch_project_items,
@@ -19,7 +25,9 @@ def discover_all(
     *,
     repositories: list[str] | None = None,
     searched_items: list[GitHubContent] | None = None,
+    project_items_by_number: dict[int, list[ProjectItem]] | None = None,
 ) -> list[DiscoveryResult]:
+    """Optionally retain project items for the same scan operation, outside public results."""
     if repositories is None:
         repositories = discover_repositories(client, settings)
     samples = (
@@ -58,6 +66,7 @@ def discover_all(
             pull_request_sample_count,
             branch_available,
             branch_detail,
+            project_items_by_number=project_items_by_number,
         )
         for project_number in project_numbers
     ]
@@ -86,9 +95,13 @@ def discover_project(
     pull_request_sample_count: int,
     branch_available: bool,
     branch_detail: str,
+    *,
+    project_items_by_number: dict[int, list[ProjectItem]] | None = None,
 ) -> DiscoveryResult:
     project, fields = fetch_project_fields(client, settings.github_org, project_number)
     project_items = fetch_project_items(client, settings.github_org, project_number)
+    if project_items_by_number is not None:
+        project_items_by_number[project_number] = project_items
     field_names = {field.name.casefold() for field in fields}
     required_missing = [
         name for name in settings.required_project_fields if name.casefold() not in field_names
