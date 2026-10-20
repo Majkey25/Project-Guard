@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import html
 import json
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from typing import Literal
@@ -43,12 +44,13 @@ def render_offline_html(
     # terminate them mid-JSON); "<\/" is identical after JSON.parse.
     columns_json = json.dumps([asdict(c) for c in columns], ensure_ascii=False)
     rows_json = json.dumps([dict(r) for r in rows], ensure_ascii=False)
-    return (
-        _TEMPLATE.replace("__TITLE__", html.escape(title))
-        .replace("__SUBTITLE__", html.escape(subtitle))
-        .replace("__COLUMNS__", columns_json.replace("</", "<\\/"))
-        .replace("__ROWS__", rows_json.replace("</", "<\\/"))
-    )
+    replacements = {
+        "__TITLE__": html.escape(title),
+        "__SUBTITLE__": html.escape(subtitle),
+        "__COLUMNS__": columns_json.replace("</", "<\\/"),
+        "__ROWS__": rows_json.replace("</", "<\\/"),
+    }
+    return re.sub(r"__(?:TITLE|SUBTITLE|COLUMNS|ROWS)__", lambda m: replacements[m[0]], _TEMPLATE)
 
 
 _TEMPLATE = """<!DOCTYPE html>

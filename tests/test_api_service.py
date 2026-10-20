@@ -3,13 +3,27 @@
 # session store, worth covering without wiring a full GitHubClient + LLM agent through reply().
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import asyncio
+from collections.abc import AsyncGenerator
+from concurrent.futures import ThreadPoolExecutor
+from datetime import UTC, datetime, timedelta
+from threading import Event
 from unittest.mock import MagicMock, patch
 
-from github_audit.api.service import ConversationState, ProjectGuardChatService, ProjectSnapshot
+import pytest
+from pydantic_ai.messages import ModelResponse, TextPart
+
+from github_audit.api.service import (
+    ChatServiceError,
+    ConversationState,
+    ConversationStore,
+    ProjectGuardChatService,
+    ProjectSnapshot,
+    _settings_scope,
+)
 from github_audit.applier import PartialApplyError
 from github_audit.config import Settings
-from github_audit.github_client import GitHubError
+from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import ProjectAgentResult
 from github_audit.models import (
     ApplyChange,
@@ -17,6 +31,7 @@ from github_audit.models import (
     AuditFinding,
     AuditResult,
     IssueCommentPlan,
+    PendingWrite,
     ProjectFieldDefinition,
 )
 
@@ -218,3 +233,170 @@ def test_conversation_store_reuses_state_for_same_conversation_id() -> None:
     state.pending_writes.append(_comment())
     _, state_again = service._sessions.get("abc")
     assert len(state_again.pending_writes) == 1
+
+
+@pytest.mark.parametrize("message,context", [("apply it", None), ("prepare", "2")])
+def test_inflight_apply_rejects_same_conversation_turn(message: str, context: str | None) -> None:
+    service = ProjectGuardChatService()
+    settings = _settings()
+    _, state = service._sessions.get("same", scope_key=_settings_scope(settings))
+    state.pending_writes = [_comment()]
+    state.pending_content_id = "I_1"
+    started, release = Event(), Event()
+    writes: list[str] = []
+
+    def write(
+        client: GitHubClient,
+        pending: PendingWrite,
+        *,
+        project_id: str | None,
+        fields: list[ProjectFieldDefinition] | None,
+        created_item_ids: dict[str, str],
+    ) -> None:
+        writes.append("comment")
+        if len(writes) == 1:
+            started.set()
+            assert release.wait(5)
+
+    with (
+        patch("github_audit.api.service.load_settings", return_value=settings),
+        patch("github_audit.api.service.GitHubClient"),
+        patch("github_audit.api.service.apply_pending_write", side_effect=write),
+        patch.object(service, "_scan_snapshot", return_value=_snapshot(_finding(2, "I_2"))),
+        patch.object(service, "_reply_with_finding") as plan,
+        ThreadPoolExecutor(max_workers=1) as pool,
+    ):
+        first = pool.submit(service.reply, "apply it", "same")
+        try:
+            assert started.wait(5)
+            with pytest.raises(ChatServiceError) as error:
+                service.reply(message, "same", context)
+            assert error.value.status_code == 409
+            assert state.pending_writes == [_comment()]
+            plan.assert_not_called()
+            assert service.reply("apply it", "independent").answer == "No pending write."
+        finally:
+            release.set()
+        assert first.result(timeout=5).answer == "Applied 1 write(s)."
+        assert service.reply("apply it", "same").answer == "No pending write."
+    assert writes == ["comment"]
+
+
+def test_failed_apply_releases_turn_and_retries_only_remaining_writes() -> None:
+    service = ProjectGuardChatService()
+    settings = _settings()
+    _, state = service._sessions.get("retry", scope_key=_settings_scope(settings))
+    first, second = _comment("first"), _comment("second")
+    state.pending_writes = [first, second]
+    with (
+        patch("github_audit.api.service.load_settings", return_value=settings),
+        patch("github_audit.api.service.GitHubClient"),
+        patch(
+            "github_audit.api.service.apply_pending_write",
+            side_effect=[None, GitHubError("failed"), None],
+        ) as write,
+    ):
+        assert "1 write(s) remain queued" in service.reply("apply it", "retry").answer
+        assert service.reply("apply it", "retry").answer == "Applied 1 write(s)."
+    assert [call.args[1] for call in write.call_args_list] == [first, second, second]
+    assert state.pending_writes == []
+
+
+def test_active_session_survives_expiry_and_capacity_eviction() -> None:
+    store = ConversationStore(max_sessions=2, ttl=timedelta(seconds=1))
+    with store.turn("active") as (_, active):
+        active.pending_writes = [_comment()]
+        active.touched_at = datetime.now(UTC) - timedelta(seconds=2)
+        store.get("idle")
+        store.get("replacement")
+        assert len(store._items) == 2
+        with pytest.raises(ChatServiceError) as error:
+            store.get("active")
+        assert error.value.status_code == 409
+    assert store.get("active")[1] is active
+    active.touched_at = datetime.now(UTC) - timedelta(seconds=2)
+    assert store.get("active")[1].pending_writes == []
+
+
+def test_full_active_store_rejects_admission_without_growing_or_replacing_owners() -> None:
+    store = ConversationStore(max_sessions=2)
+    with store.turn("first") as (_, first):
+        with store.turn("second"):
+            with pytest.raises(ChatServiceError) as error:
+                store.get("third")
+            assert error.value.status_code == 503
+            assert len(store._items) == 2
+        store.get("third")
+        assert store._items["first"] is first
+        assert len(store._items) == 2
+
+
+@pytest.mark.parametrize(
+    "ending", ["complete", "close", "cancel", "error", "unopened", "setup_error"]
+)
+def test_stream_turn_ownership_and_cleanup(ending: str) -> None:
+    service = ProjectGuardChatService()
+    settings = _settings()
+    _, state = service._sessions.get("stream", scope_key=_settings_scope(settings))
+    closed = Event()
+    messages = [ModelResponse(parts=[TextPart(content="hello!")])]
+
+    async def provider_tokens() -> AsyncGenerator[str, None]:
+        try:
+            yield "hello"
+            if ending == "error":
+                raise GitHubError("stream failed")
+            if ending == "cancel":
+                await asyncio.Event().wait()
+            yield "!"
+        finally:
+            closed.set()
+
+    async def scenario() -> None:
+        bundle = service.stream("hello", "stream")
+        assert bundle is not None
+        tokens, finalise = bundle
+        if ending == "unopened":
+            await tokens.aclose()
+        elif ending == "setup_error":
+            with pytest.raises(ValueError, match="setup failed"):
+                await anext(tokens)
+        else:
+            assert await anext(tokens) == "hello"
+            with pytest.raises(ChatServiceError) as error:
+                service.reply("apply it", "stream")
+            assert error.value.status_code == 409
+            with pytest.raises(ChatServiceError):
+                service.stream("another", "stream")
+            if ending == "complete":
+                assert [chunk async for chunk in tokens] == ["!"]
+                assert finalise().answer == "hello!"
+                assert finalise().answer == "hello!"
+            elif ending == "close":
+                await tokens.aclose()
+            elif ending == "cancel":
+                task = asyncio.create_task(anext(tokens))
+                await asyncio.sleep(0)
+                task.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await task
+            else:
+                with pytest.raises(GitHubError, match="stream failed"):
+                    await anext(tokens)
+            assert closed.is_set()
+        assert service.reply("apply it", "stream").answer == "No pending write."
+
+    with (
+        patch("github_audit.api.service.load_settings", return_value=settings),
+        patch("github_audit.api.service._llm_ready", return_value=True),
+        patch.object(service, "_scan_snapshot", return_value=_snapshot()),
+        patch(
+            "github_audit.api.service.general_chat_stream",
+            side_effect=ValueError("setup failed") if ending == "setup_error" else None,
+            return_value=(provider_tokens(), lambda: messages),
+        ) as stream,
+    ):
+        asyncio.run(scenario())
+        if ending == "unopened":
+            stream.assert_not_called()
+    assert state.message_history == (messages if ending == "complete" else [])

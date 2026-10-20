@@ -1,15 +1,17 @@
 from __future__ import annotations
 
 from collections import Counter
-from collections.abc import AsyncGenerator, Callable
+from collections.abc import AsyncGenerator, Callable, Generator
 from concurrent.futures import Future
-from contextlib import aclosing
+from contextlib import aclosing, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from hashlib import sha256
 from threading import Lock
 from typing import TYPE_CHECKING
 from uuid import uuid4
+
+from fastapi.concurrency import run_in_threadpool
 
 from github_audit.agent_chat import should_apply_now
 from github_audit.applier import (
@@ -63,6 +65,10 @@ class ChatUnavailableError(ChatServiceError):
     status_code = 503
 
 
+class ChatBusyError(ChatServiceError):
+    status_code = 409
+
+
 def _empty_questions() -> list[str]:
     return []
 
@@ -97,6 +103,7 @@ class ConversationState:
     message_history: list[ModelMessage] = field(default_factory=_empty_message_history)
     touched_at: datetime = field(default_factory=lambda: datetime.now(UTC))
     scope_key: bytes | None = None
+    in_use: bool = False
 
 
 @dataclass(frozen=True)
@@ -122,7 +129,7 @@ class ConversationStore:
         self._items: dict[str, ConversationState] = {}
 
     def get(
-        self, conversation_id: str | None, *, scope_key: bytes | None = None
+        self, conversation_id: str | None, *, scope_key: bytes | None = None, claim: bool = False
     ) -> tuple[str, ConversationState]:
         now = datetime.now(UTC)
         with self._lock:
@@ -130,26 +137,52 @@ class ConversationStore:
             key = conversation_id or uuid4().hex
             state = self._items.get(key)
             if state is None:
+                self._prune_to_limit()
                 state = ConversationState(scope_key=scope_key)
                 self._items[key] = state
-                self._prune_to_limit()
             elif state.scope_key != scope_key:
                 raise ChatInputError(
                     "Configuration changed for this conversation. Start a new conversation."
                 )
+            if state.in_use:
+                raise ChatBusyError(
+                    "This conversation already has a turn in progress. Retry later."
+                )
+            state.in_use = claim
             state.touched_at = now
             return key, state
 
+    @contextmanager
+    def turn(
+        self, conversation_id: str | None, *, scope_key: bytes | None = None
+    ) -> Generator[tuple[str, ConversationState]]:
+        key, state = self.get(conversation_id, scope_key=scope_key, claim=True)
+        try:
+            yield key, state
+        finally:
+            with self._lock:
+                state.touched_at = datetime.now(UTC)
+                state.in_use = False
+
     def _prune(self, now: datetime) -> None:
-        expired = [key for key, state in self._items.items() if now - state.touched_at > self._ttl]
+        expired = [
+            key
+            for key, state in self._items.items()
+            if not state.in_use and now - state.touched_at > self._ttl
+        ]
         for key in expired:
             del self._items[key]
 
     def _prune_to_limit(self) -> None:
-        overflow = len(self._items) - self._max_sessions
+        overflow = len(self._items) + 1 - self._max_sessions
         if overflow <= 0:
             return
-        oldest = sorted(self._items, key=lambda key: self._items[key].touched_at)
+        oldest = sorted(
+            (key for key, state in self._items.items() if not state.in_use),
+            key=lambda key: self._items[key].touched_at,
+        )
+        if len(oldest) < overflow:
+            raise ChatUnavailableError("All conversation slots are busy. Retry later.")
         for key in oldest[:overflow]:
             del self._items[key]
 
@@ -198,41 +231,46 @@ class ProjectGuardChatService:
         if not message:
             raise ChatInputError("message is empty")
         settings = load_settings()
-        session_id, state = self._sessions.get(conversation_id, scope_key=_settings_scope(settings))
-        if should_apply_now(message):
-            if context and state.pending_writes:
-                # The queued writes belong to one item; confirming while a different
-                # item is selected must never write to the previously selected one.
-                finding = self._scan_snapshot(settings).findings.get(context)
-                if finding is None or finding.content_id != state.pending_content_id:
-                    count = len(state.pending_writes)
-                    state.pending_writes = []
-                    state.pending_project_id = None
-                    state.pending_fields = None
-                    state.pending_content_id = None
-                    return ChatResult(
-                        session_id,
-                        f"Discarded {count} queued write(s) because you switched items."
-                        " Nothing was applied. Ask again on the currently selected item.",
-                    )
-            return ChatResult(session_id, self._apply_pending(settings, state))
+        with self._sessions.turn(conversation_id, scope_key=_settings_scope(settings)) as (
+            session_id,
+            state,
+        ):
+            if should_apply_now(message):
+                if context and state.pending_writes:
+                    # The queued writes belong to one item; confirming while a different
+                    # item is selected must never write to the previously selected one.
+                    finding = self._scan_snapshot(settings).findings.get(context)
+                    if finding is None or finding.content_id != state.pending_content_id:
+                        count = len(state.pending_writes)
+                        state.pending_writes = []
+                        state.pending_project_id = None
+                        state.pending_fields = None
+                        state.pending_content_id = None
+                        return ChatResult(
+                            session_id,
+                            f"Discarded {count} queued write(s) because you switched items."
+                            " Nothing was applied. Ask again on the currently selected item.",
+                        )
+                return ChatResult(session_id, self._apply_pending(settings, state))
 
-        snapshot = self._scan_snapshot(settings)
-        if context:
-            return self._reply_with_finding(settings, snapshot, state, session_id, message, context)
-        if not _llm_ready(settings):
-            raise ChatUnavailableError("LLM is not configured")
-        reply, new_messages = general_chat(
-            message,
-            snapshot.context,
-            settings,
-            message_history=state.message_history,
-            in_tool_commands=False,
-        )
-        state.message_history = trim_message_history(
-            state.message_history + new_messages, _MAX_HISTORY_MESSAGES
-        )
-        return ChatResult(session_id, reply)
+            snapshot = self._scan_snapshot(settings)
+            if context:
+                return self._reply_with_finding(
+                    settings, snapshot, state, session_id, message, context
+                )
+            if not _llm_ready(settings):
+                raise ChatUnavailableError("LLM is not configured")
+            reply, new_messages = general_chat(
+                message,
+                snapshot.context,
+                settings,
+                message_history=state.message_history,
+                in_tool_commands=False,
+            )
+            state.message_history = trim_message_history(
+                state.message_history + new_messages, _MAX_HISTORY_MESSAGES
+            )
+            return ChatResult(session_id, reply)
 
     def stream(
         self,
@@ -252,35 +290,37 @@ class ProjectGuardChatService:
             # session here or the reply() fallback would create a second, orphaned one
             if should_apply_now(message):
                 return None
-            session_id, state = self._sessions.get(None, scope_key=scope_key)
+            session_id, _ = self._sessions.get(None, scope_key=scope_key)
         else:
-            session_id, state = self._sessions.get(conversation_id, scope_key=scope_key)
+            session_id, _ = self._sessions.get(conversation_id, scope_key=scope_key)
             if should_apply_now(message):
                 return None
         if not _llm_ready(settings):
             raise ChatUnavailableError("LLM is not configured")
         snapshot = self._scan_snapshot(settings)
         chunks: list[str] = []
-        token_iter, get_new_messages = general_chat_stream(
-            message,
-            snapshot.context,
-            settings,
-            message_history=state.message_history,
-            in_tool_commands=False,
-        )
 
         async def tokens() -> AsyncGenerator[str, None]:
-            # aclosing: closing this generator must also close the LLM stream.
-            async with aclosing(token_iter):
-                async for chunk in token_iter:
-                    chunks.append(chunk)
-                    yield chunk
+            # Claim on iteration so an unopened or cancelled stream cannot pin a session.
+            with self._sessions.turn(session_id, scope_key=scope_key) as (_, state):
+                token_iter, get_new_messages = await run_in_threadpool(
+                    general_chat_stream,
+                    message,
+                    snapshot.context,
+                    settings,
+                    message_history=state.message_history,
+                    in_tool_commands=False,
+                )
+                # aclosing: closing this generator must also close the LLM stream.
+                async with aclosing(token_iter):
+                    async for chunk in token_iter:
+                        chunks.append(chunk)
+                        yield chunk
+                state.message_history = trim_message_history(
+                    state.message_history + get_new_messages(), _MAX_HISTORY_MESSAGES
+                )
 
         def finalise() -> ChatResult:
-            new_messages = get_new_messages()
-            state.message_history = trim_message_history(
-                state.message_history + new_messages, _MAX_HISTORY_MESSAGES
-            )
             return ChatResult(session_id, "".join(chunks))
 
         return tokens(), finalise

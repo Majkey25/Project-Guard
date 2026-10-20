@@ -370,11 +370,11 @@ with st.sidebar:
             ),
         )
         require_pr_branch = st.checkbox(
-            "Missing linked PR or branch specifically",
+            "Missing development link (legacy setting)",
             value=_bool("REQUIRE_LINKED_PR_OR_BRANCH", "true"),
             help=(
-                "Stricter than 'Missing development link': flags items that have no "
-                "linked PR or branch reference anywhere, including in the PR body."
+                "Same check as 'Missing development link'. Disable both to skip it. "
+                "Branch links and branch references in item text are not checked."
             ),
         )
 
@@ -705,6 +705,10 @@ def _run_scan() -> None:
                 searched_items=searched_items,
                 project_items_by_number=project_items,
             )
+            if not discoveries:
+                st.session_state.error = "No projects discovered. Check the project scan scope."
+                _clear_scan_results()
+                return
             results = scan_all(
                 client, settings, discoveries, searched_items, project_items_by_number=project_items
             )
@@ -1578,7 +1582,7 @@ def _render_findings_tab() -> None:
             st.markdown("""
 - **Required fields** — Estimate, Priority, Iteration (sprint), Difficulty, Status (configurable)
 - **Assignees** — whether items are assigned and to your target users
-- **Development links** — whether issues have a linked PR or branch
+- **Development links** — linked PRs for issues and closing issues for PRs; branches are not checked
 - **Project board membership** — optional check for items missing from the V2 board
             """)
         return
@@ -1594,7 +1598,10 @@ def _render_findings_tab() -> None:
     if not rows:
         with _ai_popover:
             _render_agent_assistant([])
-        st.success("✅ No findings — everything looks good!")
+        if stats["issues"] + stats["prs"] == 0:
+            st.info("No issues or pull requests were audited. Check the scan scope and filters.")
+        else:
+            st.success("✅ No findings — everything looks good!")
         return
 
     # ── filters ───────────────────────────────────────────────────────────────

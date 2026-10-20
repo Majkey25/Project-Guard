@@ -106,7 +106,10 @@ def discover_project(
     required_missing = [
         name for name in settings.required_project_fields if name.casefold() not in field_names
     ]
-    limitations: list[str] = []
+    limitations = [
+        "Branch links and branch references in item text are not evaluated; "
+        "development checks use linked pull requests and closing issues."
+    ]
     if not branch_available:
         limitations.append(f"Branch link probe: {branch_detail}")
     content_types = sorted({item.content_type for item in project_items})
