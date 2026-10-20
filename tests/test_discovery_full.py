@@ -168,6 +168,13 @@ def test_discover_all_multiple_projects() -> None:
     assert len(results) == 2
     assert results[0].project_number == 10
     assert results[1].project_number == 20
+    assert all(
+        any(
+            "Branch links and branch references" in detail
+            for detail in result.development_limitations
+        )
+        for result in results
+    )
 
 
 def test_discover_all_can_fetch_all_project_numbers() -> None:

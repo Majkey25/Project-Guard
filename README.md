@@ -244,8 +244,8 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `REQUIRE_PROJECT_ITEM` | Flag issues missing from board | `true` |
 | `REQUIRE_PROJECT_ITEM_PULL_REQUESTS` | Also require a board item for PRs | `false` |
 | `REQUIRE_ASSIGNEE` | Flag unassigned items | `true` |
-| `REQUIRE_DEVELOPMENT_LINK` | Flag items with no dev link | `true` |
-| `REQUIRE_LINKED_PR_OR_BRANCH` | Stricter dev-link check | `true` |
+| `REQUIRE_DEVELOPMENT_LINK` | Flag issues without linked PRs and PRs without closing issues | `true` |
+| `REQUIRE_LINKED_PR_OR_BRANCH` | Legacy alias for the same check; disable both to skip it. Branch links and text references are not checked | `true` |
 | `INCLUDE_ISSUES` | Scan open issues | `true` |
 | `INCLUDE_CLOSED_ISSUES` | Also scan closed issues | `false` |
 | `INCLUDE_PULL_REQUESTS` | Scan open PRs | `true` |
