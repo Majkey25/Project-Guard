@@ -12,6 +12,19 @@ _COLUMNS = [
 ]
 
 
+def test_template_markers_in_user_values_remain_literal() -> None:
+    html = render_offline_html(
+        "__ROWS__",
+        "__COLUMNS__",
+        [OfflineColumn("value", "__ROWS__")],
+        [{"value": "<img src=x onerror=alert(1)>"}],
+    )
+    assert "<title>__ROWS__</title>" in html
+    assert '<p class="subtitle">__COLUMNS__</p>' in html
+    assert '"label": "__ROWS__"' in html
+    assert '<title>[{"value"' not in html
+
+
 def test_render_embeds_rows_and_columns() -> None:
     html = render_offline_html(
         "Title <x>",
