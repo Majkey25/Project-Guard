@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 import stat
+import subprocess
 from pathlib import Path
 
 import httpx
@@ -11,6 +13,7 @@ from markdown_it import MarkdownIt
 from starlette.responses import PlainTextResponse
 from starlette.types import Receive, Scope, Send
 
+from github_audit import config
 from github_audit.api.access import MAX_CONCURRENT_REQUESTS, ApiAccess
 from github_audit.config import Settings, write_env_keys
 from github_audit.models import AuditResult
@@ -86,6 +89,79 @@ def test_env_save_rejects_symlink(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="symlink"):
         write_env_keys(path, {"TOKEN": "synthetic-token"})
     assert target.read_text(encoding="utf-8") == "unchanged"
+
+
+def test_env_save_requires_private_directory_support_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text('TOKEN="old"\n', encoding="utf-8")
+    monkeypatch.setattr(config.sys, "version_info", (3, 12, 3))
+    if os.name == "nt":
+        with pytest.raises(ValueError, match=r"Python 3\.12\.4"):
+            write_env_keys(path, {"TOKEN": "new"})
+        assert path.read_text(encoding="utf-8") == 'TOKEN="old"\n'
+    else:
+        write_env_keys(path, {"TOKEN": "new"})
+        assert path.read_text(encoding="utf-8") == 'TOKEN="new"\n'
+    assert list(tmp_path.glob(".env-*")) == []
+
+
+def test_env_save_failed_replace_preserves_old_file(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    path = tmp_path / ".env"
+    path.write_text('TOKEN="old"\n', encoding="utf-8")
+
+    def refuse_replace(source: Path, destination: Path) -> None:
+        assert source.read_text(encoding="utf-8") == 'TOKEN="new"\n'
+        assert destination == path
+        raise PermissionError("replace denied")
+
+    monkeypatch.setattr(config.os, "replace", refuse_replace)
+    with pytest.raises(PermissionError, match="replace denied"):
+        write_env_keys(path, {"TOKEN": "new"})
+    assert path.read_text(encoding="utf-8") == 'TOKEN="old"\n'
+    assert list(tmp_path.glob(".env-*")) == []
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows ACL regression")
+def test_env_save_keeps_staging_and_replacement_private_on_windows(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    subprocess.run(
+        ["icacls", str(shared), "/grant", "*S-1-1-0:(OI)(CI)(R)", "/q"],
+        check=True,
+        capture_output=True,
+    )
+    acl_file = tmp_path / "acl.txt"
+
+    def principals(path: Path) -> set[str]:
+        subprocess.run(
+            ["icacls", str(path), "/save", str(acl_file), "/q"],
+            check=True,
+            capture_output=True,
+        )
+        return set(re.findall(r"\([^()]*;([^;()]*)\)", acl_file.read_text(encoding="utf-16-le")))
+
+    assert "WD" in principals(shared)
+    path = shared / ".env"
+    replace = os.replace
+
+    def private_replace(source: Path, destination: Path) -> None:
+        assert principals(source) == {"SY", "BA", "OW"}
+        assert principals(source.parent) == {"SY", "BA", "OW"}
+        replace(source, destination)
+
+    monkeypatch.setattr(config.os, "replace", private_replace)
+    write_env_keys(path, {"TOKEN": "old"})
+    assert principals(path) == {"SY", "BA", "OW"}
+    write_env_keys(path, {"TOKEN": "new"})
+    assert principals(path) == {"SY", "BA", "OW"}
+    assert path.read_text(encoding="utf-8") == 'TOKEN="new"\n'
+    assert list(shared.glob(".env-*")) == []
 
 
 def test_api_concurrency_limit_covers_whole_response(monkeypatch: pytest.MonkeyPatch) -> None:

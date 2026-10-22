@@ -175,7 +175,10 @@ The dashboard clears scan results, conversation history and queued writes when
 credentials, scope or write settings change. Merge previews include the scanned
 head commit; GitHub rejects the merge if that commit changes before confirmation.
 Saved `.env` updates replace the file atomically and reject symlinks; POSIX files
-are owner-only. On Windows, the containing directory's ACL still controls access.
+are owner-only. Windows saves require Python 3.12.4 or newer and use private
+staging permissions that allow only the owner, Administrators and SYSTEM to read
+the saved file on an ACL-capable filesystem such as NTFS. Use a directory you
+control. Older Windows runtimes refuse to save and keep existing settings.
 `apply --yes` with `AUTO_APPLY=true` intentionally permits unattended model field
 suggestions. Model confidence is not proof against malicious issue text; use
 dry runs or the dashboard's explicit previews when that risk is unacceptable.
@@ -327,7 +330,7 @@ Opens a temporary browser profile and scrapes the visible GitHub Project table. 
 
 ## Releases
 
-The [v0.9.6 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.6)
+The [v0.9.7 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.7)
 contains the security fixes described here. Source archives are available on the
 release page; no binary installer is provided.
 
@@ -340,7 +343,7 @@ uv run pyright
 uv run pytest
 ```
 
-Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.9.6`.
+Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.9.7`.
 
 ## Development
 
