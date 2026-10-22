@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import re
 import stat
+import sys
 import tempfile
 from datetime import date
 from pathlib import Path
@@ -36,7 +37,9 @@ def split_required_fields(value: str) -> list[str]:
 
 
 def write_env_keys(path: Path, updates: dict[str, str]) -> None:
-    """Replace local settings atomically without following links or sharing POSIX secrets."""
+    """Replace local settings atomically using private staging permissions."""
+    if os.name == "nt" and sys.version_info < (3, 12, 4):
+        raise ValueError("Saving settings on Windows requires Python 3.12.4 or newer")
     for value in updates.values():
         if any(char in value for char in '\n\r"\\'):
             raise ValueError("env values must not contain newlines, quotes or backslashes")
@@ -56,19 +59,15 @@ def write_env_keys(path: Path, updates: dict[str, str]) -> None:
             lines[index] = f'{key}="{updates[key]}"'
             remaining.pop(key, None)
     lines.extend(f'{key}="{value}"' for key, value in remaining.items())
-    temporary: Path | None = None
-    try:
+    with tempfile.TemporaryDirectory(dir=path.parent, prefix=".env-") as directory:
         with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, prefix=".env-", delete=False
+            mode="w", encoding="utf-8", dir=directory, delete=False
         ) as stream:
             temporary = Path(stream.name)
             stream.write("\n".join(lines) + "\n")
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(temporary, path)
-    finally:
-        if temporary is not None:
-            temporary.unlink(missing_ok=True)
 
 
 def split_int_csv(value: str, label: str) -> list[int]:
