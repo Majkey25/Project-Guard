@@ -138,6 +138,8 @@ def _search_items(
         include_closed_issues=settings.include_closed_issues,
         include_closed_pull_requests=settings.include_closed_pull_requests,
         include_unassigned=settings.include_unassigned,
+        max_pages=settings.github_search_max_pages,
+        max_items=settings.github_search_max_items,
     )
 
 
@@ -236,6 +238,8 @@ def build_my_work(
         include_closed_issues=False,
         include_closed_pull_requests=False,
         include_unassigned=False,
+        max_pages=settings.github_search_max_pages,
+        max_items=settings.github_search_max_items,
     )
     status_by_content_id: dict[str, str] = {}
     for project_number in settings.github_project_numbers:

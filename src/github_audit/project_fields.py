@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from collections.abc import Iterable
 from concurrent.futures import ThreadPoolExecutor
+from dataclasses import dataclass, field
+from threading import Lock
 
+from github_audit.config import DEFAULT_SEARCH_MAX_ITEMS, DEFAULT_SEARCH_MAX_PAGES
 from github_audit.github_client import (
     GitHubClient,
     GitHubError,
@@ -545,6 +548,30 @@ def fetch_remaining_field_values(
 _SEARCH_MAX_WORKERS = 8
 
 
+@dataclass
+class _SearchBudget:
+    pages: int
+    items: int
+    error: str = ""
+    lock: Lock = field(default_factory=Lock)
+
+    def consume(self, *, pages: int = 0, items: int = 0) -> None:
+        with self.lock:
+            if not self.error:
+                if pages > self.pages:
+                    self.error = "GITHUB_SEARCH_MAX_PAGES"
+                elif items > self.items:
+                    self.error = "GITHUB_SEARCH_MAX_ITEMS"
+            if self.error:
+                raise GitHubError(
+                    f"GitHub search budget exceeded ({self.error}). "
+                    "Narrow the repository/assignee scope or increase this limit; "
+                    "no audit was produced."
+                )
+            self.pages -= pages
+            self.items -= items
+
+
 def search_items(
     client: GitHubClient,
     repositories: Iterable[str],
@@ -555,48 +582,70 @@ def search_items(
     include_closed_issues: bool,
     include_closed_pull_requests: bool = False,
     include_unassigned: bool = False,
+    max_pages: int = DEFAULT_SEARCH_MAX_PAGES,
+    max_items: int = DEFAULT_SEARCH_MAX_ITEMS,
 ) -> list[GitHubContent]:
+    if max_pages < 1 or max_items < 1:
+        raise ValueError("GitHub search limits must be positive")
     issue_states = "" if include_closed_issues else " is:open"
     pr_states = "" if include_closed_pull_requests else " is:open"
+    selectors = [f"assignee:{assignee}" for assignee in assignees]
+    if include_unassigned:
+        selectors.append("no:assignee")
     queries: list[str] = []
     for repository in repositories:
-        for assignee in assignees:
-            if include_issues:
-                queries.append(f"repo:{repository} is:issue assignee:{assignee}{issue_states}")
-            if include_pull_requests:
-                queries.append(f"repo:{repository} is:pr assignee:{assignee}{pr_states}")
-        if include_unassigned:
-            if include_issues:
-                queries.append(f"repo:{repository} is:issue no:assignee{issue_states}")
-            if include_pull_requests:
-                queries.append(f"repo:{repository} is:pr no:assignee{pr_states}")
+        for selector in selectors:
+            for kind, enabled, states in (
+                ("issue", include_issues, issue_states),
+                ("pr", include_pull_requests, pr_states),
+            ):
+                if not enabled:
+                    continue
+                if len(queries) == max_pages:
+                    raise GitHubError(
+                        f"GitHub search scope needs more than {max_pages} queries "
+                        "(GITHUB_SEARCH_MAX_PAGES). Narrow the repository/assignee scope "
+                        "or increase this limit; no audit was produced."
+                    )
+                queries.append(f"repo:{repository} is:{kind} {selector}{states}")
     if not queries:
         return []
+    budget = _SearchBudget(max_pages, max_items)
     items_by_id: dict[str, GitHubContent] = {}
     with ThreadPoolExecutor(max_workers=min(_SEARCH_MAX_WORKERS, len(queries))) as pool:
         # Submit-order iteration (not as_completed) keeps merge order deterministic
         # even though the searches themselves run concurrently.
-        futures = [pool.submit(run_search, client, query) for query in queries]
+        futures = [pool.submit(run_search, client, query, budget) for query in queries]
         for future in futures:
             for item in future.result():
                 items_by_id[item.id] = item
     return list(items_by_id.values())
 
 
-def run_search(client: GitHubClient, query: str) -> list[GitHubContent]:
+def run_search(
+    client: GitHubClient, query: str, budget: _SearchBudget | None = None
+) -> list[GitHubContent]:
+    if budget is None:
+        budget = _SearchBudget(DEFAULT_SEARCH_MAX_PAGES, DEFAULT_SEARCH_MAX_ITEMS)
     items: list[GitHubContent] = []
     after: str | None = None
     while True:
+        budget.consume(pages=1)
         data = client.graphql(SEARCH_QUERY, {"query": query, "after": after})
         connection = as_object(data.get("search"), "search")
-        for node in as_list(connection.get("nodes"), "search.nodes"):
+        nodes = as_list(connection.get("nodes"), "search.nodes")
+        budget.consume(items=len(nodes))
+        for node in nodes:
             item = parse_content(as_object(node, "search node"))
             if item is not None:
                 items.append(item)
         page_info = as_object(connection.get("pageInfo"), "search.pageInfo")
         if page_info.get("hasNextPage") is not True:
             break
-        after = optional_str(page_info.get("endCursor"))
+        next_after = optional_str(page_info.get("endCursor"))
+        if not next_after or next_after == after:
+            raise GitHubError("GitHub search pagination did not advance; no audit was produced")
+        after = next_after
     return items
 
 

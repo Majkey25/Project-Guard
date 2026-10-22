@@ -22,6 +22,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _USERNAME_RE = re.compile(r"^[a-zA-Z0-9][a-zA-Z0-9-]{0,38}$")
 _REPO_NAME_RE = re.compile(r"^[a-zA-Z0-9_.\-]+$")
+DEFAULT_SEARCH_MAX_PAGES = 100
+DEFAULT_SEARCH_MAX_ITEMS = 5_000
 
 
 def split_csv(value: str) -> list[str]:
@@ -117,6 +119,12 @@ class Settings(BaseSettings):
         default=False, validation_alias="GITHUB_INCLUDE_ALL_REPOSITORIES"
     )
     target_assignees_raw: str = Field(default="", validation_alias="TARGET_ASSIGNEES")
+    github_search_max_pages: int = Field(
+        default=DEFAULT_SEARCH_MAX_PAGES, ge=1, validation_alias="GITHUB_SEARCH_MAX_PAGES"
+    )
+    github_search_max_items: int = Field(
+        default=DEFAULT_SEARCH_MAX_ITEMS, ge=1, validation_alias="GITHUB_SEARCH_MAX_ITEMS"
+    )
 
     required_project_fields_raw: str = Field(
         default="Estimate,Iteration (sprint),Priority,Difficulty,Status",

@@ -183,6 +183,16 @@ control. Older Windows runtimes refuse to save and keep existing settings.
 suggestions. Model confidence is not proof against malicious issue text; use
 dry runs or the dashboard's explicit previews when that risk is unacceptable.
 
+By default, each issue/PR search allows at most 100 pages and 5,000 raw result nodes
+across all repositories, assignees and issue types, including duplicate results.
+The query list is bounded by the page limit before search requests start. Exceeding a
+limit fails the whole audit explicitly; partial findings are not returned or
+used for writes. Narrow the repository/assignee scope or set positive
+`GITHUB_SEARCH_MAX_PAGES` and `GITHUB_SEARCH_MAX_ITEMS` values in `.env` or the
+process environment for larger trusted scans. These are search work/result
+limits, not a byte limit or an overall deadline; existing request timeouts and
+retries still apply. Project-board and repository discovery requests are separate.
+
 ## Sidebar Settings
 
 | Section | Setting | What it does |
@@ -251,7 +261,7 @@ If your organization uses SAML SSO, authorize the token for the organization aft
 
 ## Configuration Reference
 
-All values can be set in `.env` or via the sidebar **Save** button.
+Set values in `.env`; sidebar settings can also be saved with the **Save** button.
 
 | Variable | Meaning | Default |
 |---|---|---|
@@ -264,6 +274,8 @@ All values can be set in `.env` or via the sidebar **Save** button.
 | `GITHUB_INCLUDE_ALL_REPOSITORIES` | Scan every org repo (archived and forked repos are skipped) | `false` |
 | `GITHUB_REPOSITORY_DENYLIST` | Repos to always skip | — |
 | `TARGET_ASSIGNEES` | Usernames to watch for target-assignee check | — |
+| `GITHUB_SEARCH_MAX_PAGES` | Total issue/PR search pages per operation | `100` |
+| `GITHUB_SEARCH_MAX_ITEMS` | Total raw search result nodes, including duplicates | `5000` |
 | `REQUIRED_PROJECT_FIELDS` | Required V2 field names | — |
 | `REQUIRE_PROJECT_ITEM` | Flag issues missing from board | `true` |
 | `REQUIRE_PROJECT_ITEM_PULL_REQUESTS` | Also require a board item for PRs | `false` |
@@ -330,7 +342,7 @@ Opens a temporary browser profile and scrapes the visible GitHub Project table. 
 
 ## Releases
 
-The [v0.9.7 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.7)
+The [v0.9.8 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.8)
 contains the security fixes described here. Source archives are available on the
 release page; no binary installer is provided.
 
@@ -343,7 +355,7 @@ uv run pyright
 uv run pytest
 ```
 
-Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.9.7`.
+Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.9.8`.
 
 ## Development
 
