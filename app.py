@@ -724,6 +724,8 @@ def _run_scan() -> None:
                 include_closed_issues=settings.include_closed_issues,
                 include_closed_pull_requests=settings.include_closed_pull_requests,
                 include_unassigned=settings.include_unassigned,
+                max_pages=settings.github_search_max_pages,
+                max_items=settings.github_search_max_items,
             )
             project_items: dict[int, list[ProjectItem]] = {}
             discoveries = discover_all(

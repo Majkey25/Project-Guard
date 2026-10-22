@@ -23,6 +23,13 @@ def _settings(**overrides: object) -> Settings:
     return Settings.model_validate(base)
 
 
+@pytest.mark.parametrize("key", ["GITHUB_SEARCH_MAX_PAGES", "GITHUB_SEARCH_MAX_ITEMS"])
+def test_search_budget_cannot_be_disabled(key: str, monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setenv(key, "0")
+    with pytest.raises(ValueError, match=key):
+        _settings()
+
+
 # ── split_int_csv ─────────────────────────────────────────────────────────────
 
 
