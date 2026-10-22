@@ -80,9 +80,11 @@ def discover_repositories(client: GitHubClient, settings: Settings) -> list[str]
         settings.github_include_all_repositories,
     )
     # config accepts bare name or org/name; compare bare names either way
-    denylist = {entry.split("/")[-1] for entry in settings.repository_denylist}
+    denylist = {entry.rsplit("/", 1)[-1].casefold() for entry in settings.repository_denylist}
     return [
-        repository for repository in repositories if repository.split("/", 1)[1] not in denylist
+        repository
+        for repository in repositories
+        if repository.rsplit("/", 1)[-1].casefold() not in denylist
     ]
 
 

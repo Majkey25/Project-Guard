@@ -280,14 +280,24 @@ def test_prepare_pr_merge_rejects_issue() -> None:
 
 
 def test_prepare_pr_merge_queues_for_pull_request() -> None:
-    deps = ProjectAgentDeps(
-        finding=_finding(item_type="pull_request"), project_id="PVT_1", fields=_fields()
-    )
+    finding = _finding(item_type="pull_request")
+    finding.head_oid = "a" * 40
+    deps = ProjectAgentDeps(finding=finding, project_id="PVT_1", fields=_fields())
     result = prepare_pr_merge(_Ctx(deps), "SQUASH")  # type: ignore[arg-type]
     plan = _pending(deps, PullRequestMergePlan)
     assert isinstance(plan, PullRequestMergePlan)
     assert plan.merge_method == "SQUASH"
+    assert plan.expected_head_oid == finding.head_oid
+    assert finding.head_oid in result
     assert "not easily reversible" in result
+
+
+def test_prepare_pr_merge_requires_a_reviewed_head() -> None:
+    deps = ProjectAgentDeps(
+        finding=_finding(item_type="pull_request"), project_id="PVT_1", fields=_fields()
+    )
+    assert "head commit is missing" in prepare_pr_merge(_Ctx(deps), "MERGE")  # type: ignore[arg-type]
+    assert not deps.pending_writes
 
 
 def test_prepare_reviewer_request_rejects_issue() -> None:

@@ -177,6 +177,7 @@ def content_from_project_item(
             url=item.url,
             state=item.state,
             is_draft=item.is_draft,
+            head_oid=item.head_oid,
             body=item.body,
             assignees=item.assignees,
             labels=item.labels,

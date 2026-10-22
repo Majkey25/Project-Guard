@@ -154,10 +154,31 @@ uv run github-audit-api --host 127.0.0.1 --port 8010
 
 API URL at `http://127.0.0.1:8010/chat`. The endpoint accepts `POST /chat?stream=true` with `prompt` or `message`, streams `data: {"delta": ...}` chunks for general chat, sends a final JSON payload, then `data: [DONE]`. `GET /status` and `GET /context` are also available.
 
+Local tokenless access requires a loopback peer and a loopback Host header;
+cross-origin browser requests are rejected. Before exposing the API through a
+network interface, proxy or tunnel, set `PROJECT_GUARD_API_TOKEN` in the server
+process environment to a strong random secret and send `Authorization: Bearer
+<token>` on every request, including `/status`. Use HTTPS for remote access.
+Non-loopback CLI startup without a token is refused. The API is for one trusted
+operator; its token grants access to that operator's configured GitHub authority,
+including confirmed writes when `AUTO_APPLY=true`. It is not a multi-user gateway.
+Requests are limited to 128 KiB, 32,000 message characters, four active requests
+(including SSE streams), and 60 non-status requests per minute per process.
+Pending confirmations are retained when the conversation store is full.
+
 After changing API configuration, start a new conversation. The API refreshes
 the affected scan cache and rejects old conversation IDs before using their
 history or queued writes with the new configuration. Requests already running
 may finish with the configuration they started with.
+
+The dashboard clears scan results, conversation history and queued writes when
+credentials, scope or write settings change. Merge previews include the scanned
+head commit; GitHub rejects the merge if that commit changes before confirmation.
+Saved `.env` updates replace the file atomically and reject symlinks; POSIX files
+are owner-only. On Windows, the containing directory's ACL still controls access.
+`apply --yes` with `AUTO_APPLY=true` intentionally permits unattended model field
+suggestions. Model confidence is not proof against malicious issue text; use
+dry runs or the dashboard's explicit previews when that risk is unacceptable.
 
 ## Sidebar Settings
 
@@ -306,9 +327,9 @@ Opens a temporary browser profile and scrapes the visible GitHub Project table. 
 
 ## Releases
 
-A historical [v0.9.5 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.5)
-is available with no uploaded binary or package assets. Use the current `main`
-branch for the source changes described here.
+The [v0.9.6 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.6)
+contains the security fixes described here. Source archives are available on the
+release page; no binary installer is provided.
 
 Before cutting a release, run:
 
@@ -319,7 +340,7 @@ uv run pyright
 uv run pytest
 ```
 
-Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.1.0`.
+Then create a GitHub release from a validated commit and tag it with the package version, e.g. `v0.9.6`.
 
 ## Development
 

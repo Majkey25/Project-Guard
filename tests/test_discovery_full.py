@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from github_audit.config import Settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.models import ProjectFieldDefinition
@@ -39,14 +41,15 @@ def _mock_project(number: int = 1) -> dict[str, Any]:
 # ── discover_repositories ────────────────────────────────────────────────────
 
 
-def test_discover_repositories_applies_denylist() -> None:
+@pytest.mark.parametrize("denied", ["repo-b", "REPO-B", "ORG/Repo-B"])
+def test_discover_repositories_applies_denylist(denied: str) -> None:
     settings = Settings.model_validate(
         {
             "github_token": "token",
             "github_project_number": 1,
             "github_project_numbers_raw": "",
             "github_repository_allowlist_raw": "repo-a,repo-b",
-            "github_repository_denylist_raw": "repo-b",
+            "github_repository_denylist_raw": denied,
             "target_assignees_raw": "alice",
             "llm_provider": "",
             "llm_base_url": "",

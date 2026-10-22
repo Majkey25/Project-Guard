@@ -12,6 +12,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from sse_starlette.sse import EventSourceResponse
 
+from github_audit.api.access import ApiAccess, api_token, loopback_host
 from github_audit.api.schemas import (
     ChatDetails,
     ChatPayload,
@@ -26,6 +27,7 @@ from github_audit.github_client import GitHubError
 _logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Project Guard API", docs_url=None, redoc_url=None)
+app.add_middleware(ApiAccess)
 service = ProjectGuardChatService()
 
 
@@ -110,7 +112,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=8010)
     args = parser.parse_args(argv)
-    uvicorn.run(app, host=args.host, port=args.port)
+    if not loopback_host(args.host) and not api_token():
+        parser.error("Non-loopback hosting requires PROJECT_GUARD_API_TOKEN")
+    uvicorn.run(app, host=args.host, port=args.port, proxy_headers=False)
 
 
 if __name__ == "__main__":

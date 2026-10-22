@@ -6,7 +6,33 @@ from unittest.mock import patch
 import pytest
 from streamlit.testing.v1 import AppTest
 
+from github_audit.models import IssueCommentPlan
+
 APP = Path(__file__).resolve().parents[1] / "app.py"
+
+
+@pytest.mark.parametrize("label", ["Personal Access Token", "Organization"])
+def test_configuration_change_drops_stale_pending_writes(label: str) -> None:
+    app = AppTest.from_file(str(APP), default_timeout=15).run()
+    assert not app.exception
+    app.session_state["agent_pending_writes"] = [
+        IssueCommentPlan(
+            subject_id="I_1",
+            repository="org/repo",
+            item_type="issue",
+            number=1,
+            body="reviewed under old credentials",
+        )
+    ]
+    app.run()
+    assert app.session_state["agent_pending_writes"]
+    next(widget for widget in app.text_input if widget.label == label).set_value("changed")
+    with patch("github_audit.github_client.GitHubClient") as client:
+        app.run()
+    assert not app.exception
+    assert app.session_state["agent_pending_writes"] == []
+    assert app.session_state["findings"] is None
+    client.assert_not_called()
 
 
 @pytest.mark.parametrize("issues,prs", [(0, 0), (1, 0), (0, 1)])

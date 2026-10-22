@@ -18,6 +18,12 @@ from github_audit.llm_evaluator import ProjectAgentResult
 from github_audit.models import AuditFinding, IssueCommentPlan
 
 
+@pytest.fixture(autouse=True)
+def reset_api_access(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("PROJECT_GUARD_API_TOKEN", raising=False)
+    main.app.middleware_stack = None
+
+
 def _save_config(path: Path, **changes: str) -> None:
     values = {
         "GITHUB_ORG": "first",
@@ -90,7 +96,7 @@ def test_context_route_reloads_saved_scope_but_reuses_unchanged_config(
     _save_config(tmp_path / ".env")
     with (
         patch.object(service, "_run_scan", side_effect=_snapshot) as scan,
-        TestClient(main.app) as client,
+        TestClient(main.app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client,
     ):
         first = client.get("/context")
         repeated = client.get("/context")
@@ -233,7 +239,7 @@ def test_stale_conversation_rejected_before_provider_or_write_calls(
         patch("github_audit.api.service.general_chat") as chat,
         patch("github_audit.api.service.general_chat_stream") as stream,
         patch("github_audit.api.service.apply_pending_write") as write,
-        TestClient(main.app) as client,
+        TestClient(main.app, base_url="http://127.0.0.1", client=("127.0.0.1", 50000)) as client,
     ):
         queued = client.post(
             "/chat?stream=false", json={"message": "prepare comment", "context": "selected"}

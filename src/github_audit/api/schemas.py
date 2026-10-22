@@ -6,9 +6,12 @@ from pydantic import AliasChoices, BaseModel, Field
 
 
 class ChatRequest(BaseModel):
-    message: str = Field(validation_alias=AliasChoices("message", "prompt"))
+    message: str = Field(
+        validation_alias=AliasChoices("message", "prompt"), min_length=1, max_length=32_000
+    )
     conversation_id: str | None = Field(
         default=None,
+        max_length=128,
         validation_alias=AliasChoices(
             "conversation_id",
             "conversationId",
@@ -16,7 +19,7 @@ class ChatRequest(BaseModel):
             "sessionId",
         ),
     )
-    context: str | None = None
+    context: str | None = Field(default=None, max_length=1024)
 
     model_config = {"populate_by_name": True}
 

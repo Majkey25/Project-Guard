@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import csv
 import json
+import re
 from collections.abc import Sequence
+from html import escape
 from pathlib import Path
 from typing import cast
 
@@ -146,16 +148,20 @@ def apply_text(result: ApplyResult) -> str:
     return "\n".join(lines)
 
 
+def _markdown_text(value: str) -> str:
+    return re.sub(r"([\\`*_{}\[\]()#+!|])", r"\\\1", escape(" ".join(value.splitlines())))
+
+
 def write_markdown(path: Path, audit: AuditResult) -> None:
     lines = [
-        f"# GitHub Audit: {audit.organization}",
+        f"# GitHub Audit: {_markdown_text(audit.organization)}",
         "",
         (
-            f"- Project: #{audit.project_number} {audit.project_title}"
+            f"- Project: #{audit.project_number} {_markdown_text(audit.project_title or '')}"
             if audit.project_number is not None
             else "- Projects: multiple"
         ),
-        f"- Repositories: {', '.join(audit.repositories) or 'none'}",
+        f"- Repositories: {_markdown_text(', '.join(audit.repositories) or 'none')}",
         f"- Scanned issues: {audit.scanned_issue_count}",
         f"- Scanned PRs: {audit.scanned_pull_request_count}",
         f"- Findings: {len(audit.findings)}",
@@ -165,27 +171,30 @@ def write_markdown(path: Path, audit: AuditResult) -> None:
     for finding in audit.findings:
         if finding.repository != current_repo:
             current_repo = finding.repository
-            lines.extend([f"## {current_repo}", ""])
+            lines.extend([f"## {_markdown_text(current_repo)}", ""])
         lines.extend(
             [
-                f"### {finding.item_type} #{finding.number}: {finding.title}",
+                f"### {finding.item_type} #{finding.number}: {_markdown_text(finding.title)}",
                 "",
-                f"- URL: {finding.url}",
-                f"- Updated: {finding.updated_at or 'unknown'}",
-                f"- Assignees: {', '.join(finding.assignees) or 'none'}",
-                f"- Missing: {', '.join(finding.missing_fields)}",
-                f"- Development: {finding.development_status}",
+                f"- URL: {_markdown_text(finding.url)}",
+                f"- Updated: {_markdown_text(finding.updated_at or 'unknown')}",
+                f"- Assignees: {_markdown_text(', '.join(finding.assignees) or 'none')}",
+                f"- Missing: {_markdown_text(', '.join(finding.missing_fields))}",
+                f"- Development: {_markdown_text(finding.development_status)}",
                 "",
             ]
         )
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
+def discovery_markdown(discovery: DiscoveryResult) -> str:
+    body = discovery_text(discovery)
+    fence = "`" * max(3, 1 + max(map(len, re.findall(r"`+", body)), default=0))
+    return f"# GitHub Audit Discovery\n\n{fence}text\n{body}\n{fence}\n"
+
+
 def write_discovery_markdown(path: Path, discovery: DiscoveryResult) -> None:
-    path.write_text(
-        f"# GitHub Audit Discovery\n\n```text\n{discovery_text(discovery)}\n```\n",
-        encoding="utf-8",
-    )
+    path.write_text(discovery_markdown(discovery), encoding="utf-8")
 
 
 def _excel_safe(value: str) -> str:

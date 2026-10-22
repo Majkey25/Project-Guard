@@ -15,6 +15,7 @@ from pydantic_ai.messages import ModelResponse, TextPart
 
 from github_audit.api.service import (
     ChatServiceError,
+    ChatUnavailableError,
     ConversationState,
     ConversationStore,
     ProjectGuardChatService,
@@ -111,6 +112,15 @@ def test_apply_pending_with_nothing_queued() -> None:
     service = ProjectGuardChatService()
     state = ConversationState()
     assert service._apply_pending(_settings(), state) == "No pending write."
+
+
+def test_pending_confirmation_is_not_evicted_by_new_conversation() -> None:
+    store = ConversationStore(max_sessions=1)
+    _, state = store.get("pending")
+    state.pending_writes = [_comment()]
+    with pytest.raises(ChatUnavailableError):
+        store.get("new")
+    assert store.get("pending")[1] is state
 
 
 def test_apply_pending_blocked_without_auto_apply() -> None:
