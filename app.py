@@ -4,6 +4,7 @@ import io
 import re
 import shlex
 from datetime import date, datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import TypedDict, cast
 
@@ -19,7 +20,7 @@ from github_audit.applier import (
     resolve_created_item_ids,
 )
 from github_audit.branches import fetch_branches
-from github_audit.config import Settings
+from github_audit.config import Settings, write_env_keys
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.models import (
@@ -189,31 +190,7 @@ def _load_env() -> dict[str, str]:
 
 
 def _write_env_keys(updates: dict[str, str]) -> None:
-    """Safely update or append keys in .env without touching unrelated lines."""
-    for v in updates.values():
-        if "\n" in v or "\r" in v:
-            msg = "env value must not contain newlines"
-            raise ValueError(msg)
-        if '"' in v or "\\" in v:
-            msg = "env value must not contain quotes or backslashes"
-            raise ValueError(msg)
-    path = _ENV_PATH
-    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
-    written: set[str] = set()
-    new_lines: list[str] = []
-    for line in lines:
-        stripped = line.strip()
-        if stripped and not stripped.startswith("#") and "=" in stripped:
-            k = stripped.partition("=")[0].strip()
-            if k in updates:
-                new_lines.append(f'{k}="{updates[k]}"')
-                written.add(k)
-                continue
-        new_lines.append(line)
-    for k, v in updates.items():
-        if k not in written:
-            new_lines.append(f'{k}="{v}"')
-    path.write_text("\n".join(new_lines) + "\n", encoding="utf-8")
+    write_env_keys(_ENV_PATH, updates)
     _load_env.clear()
 
 
@@ -240,6 +217,7 @@ session_defaults: dict[str, object | None] = {
     "agent_messages": [],
     "chat_message_history": [],
     "agent_pending_writes": [],
+    "agent_scope": None,
     "agent_pending_project_id": None,
     "agent_pending_fields": None,
     "agent_pending_content_id": None,
@@ -641,6 +619,56 @@ def _clear_scan_results() -> None:
     st.session_state.agent_pending_content_id = None
 
 
+_agent_scope = sha256(
+    repr(
+        (
+            token,
+            org,
+            project_numbers,
+            include_all_projects,
+            include_closed_projects,
+            inc_all_repos,
+            repo_allowlist,
+            repo_denylist,
+            assignees,
+            updated_from,
+            updated_to,
+            inc_issues,
+            inc_prs,
+            inc_closed,
+            inc_closed_prs,
+            inc_unassigned,
+            required_fields,
+            require_fields,
+            require_assignee,
+            require_target,
+            req_board,
+            req_board_prs,
+            require_dev,
+            require_pr_branch,
+            auto_apply_enabled,
+            llm_provider,
+            llm_model,
+            llm_api_key,
+            llm_base_url,
+            llm_api_version,
+        )
+    ).encode("utf-8")
+).digest()
+if st.session_state.agent_scope != _agent_scope and (
+    st.session_state.agent_scope is not None or st.session_state.agent_pending_writes
+):
+    _clear_scan_results()
+    st.session_state.branches = None
+    st.session_state.branches_error = None
+    st.session_state.branches_time = None
+    st.session_state.limitations = []
+    st.session_state.agent_messages = []
+    st.session_state.chat_message_history = []
+    st.session_state.agent_pending_control_updates = None
+st.session_state.agent_scope = _agent_scope
+
+
 def _run_scan() -> None:
     try:
         settings = Settings.model_validate(
@@ -931,7 +959,7 @@ def _pending_apply_reply() -> str:
     if not auto_apply_enabled:
         return (
             "Write blocked: enable **Allow GitHub writes (AUTO_APPLY)** in the sidebar "
-            "(⚙️ Config → 🧠 AI Assistant), then say `apply it` again."
+            "(⚙️ Config → 🧠 AI Assistant), then run a new scan and prepare a new preview."
         )
     if not token.strip():
         return "Write blocked: GitHub token is missing. Add it in the sidebar or `.env`."

@@ -62,6 +62,7 @@ class ProjectItem(BaseModel):
     updated_at: str | None = None
     state: str = ""
     is_draft: bool = False
+    head_oid: str | None = None
     field_values: dict[str, ProjectFieldValue] = Field(default_factory=dict)
     linked_pull_requests_count: int = 0
     closing_issues_count: int = 0
@@ -96,6 +97,7 @@ class GitHubPullRequest(BaseModel):
     url: str
     state: str
     is_draft: bool = False
+    head_oid: str | None = None
     body: str
     assignees: list[str] = Field(default_factory=list)
     labels: list[str] = Field(default_factory=list)
@@ -198,6 +200,7 @@ class AuditFinding(BaseModel):
     url: str
     state: str = ""
     is_draft: bool = False
+    head_oid: str | None = None
     assignees: list[str]
     labels: list[str] = Field(default_factory=list)
     milestone: str | None = None
@@ -353,6 +356,7 @@ class PullRequestMergePlan(BaseModel):
     repository: str
     number: int
     merge_method: Literal["MERGE", "SQUASH", "REBASE"]
+    expected_head_oid: str = Field(pattern=r"^[0-9a-f]{40}$")
 
 
 class ReviewerRequestPlan(BaseModel):

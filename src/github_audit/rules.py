@@ -56,6 +56,7 @@ def evaluate_item(
         url=content.url,
         state=content.state,
         is_draft=not isinstance(content, GitHubIssue) and content.is_draft,
+        head_oid=None if isinstance(content, GitHubIssue) else content.head_oid,
         assignees=content.assignees,
         labels=content.labels,
         milestone=content.milestone,

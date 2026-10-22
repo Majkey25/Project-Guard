@@ -123,6 +123,7 @@ fragment ContentParts on ProjectV2ItemContent {
     url
     state
     isDraft
+    headRefOid
     updatedAt
     body
     repository { nameWithOwner }
@@ -291,6 +292,7 @@ query SearchItems($query: String!, $after: String) {
         url
         state
         isDraft
+        headRefOid
         updatedAt
         body
         repository { nameWithOwner }
@@ -701,6 +703,7 @@ def parse_project_item(raw: JsonObject) -> ProjectItem:
         updated_at=parsed_content.updated_at,
         state=parsed_content.state,
         is_draft=isinstance(parsed_content, GitHubPullRequest) and parsed_content.is_draft,
+        head_oid=parsed_content.head_oid if isinstance(parsed_content, GitHubPullRequest) else None,
         field_values=field_values,
         linked_pull_requests_count=(
             parsed_content.linked_pull_requests_count
@@ -743,6 +746,7 @@ def parse_content(raw: JsonObject) -> GitHubContent | None:
             url=required_str(raw.get("url"), "pull request url"),
             state=required_str(raw.get("state"), "pull request state"),
             is_draft=raw.get("isDraft") is True,
+            head_oid=optional_str(raw.get("headRefOid")),
             updated_at=optional_str(raw.get("updatedAt")),
             body=optional_str(raw.get("body")) or "",
             assignees=parse_named_nodes(raw, "assignees", "login"),

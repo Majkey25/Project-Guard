@@ -497,11 +497,17 @@ def test_apply_milestone_update_sends_explicit_null_to_clear() -> None:
 def test_apply_pr_merge_sends_merge_method() -> None:
     client = MagicMock()
     plan = PullRequestMergePlan(
-        content_id="PR_1", repository="org/repo", number=1, merge_method="SQUASH"
+        content_id="PR_1",
+        repository="org/repo",
+        number=1,
+        merge_method="SQUASH",
+        expected_head_oid="a" * 40,
     )
     apply_pr_merge(client, plan)  # type: ignore[arg-type]
     _, variables = client.graphql.call_args.args
-    assert variables == {"input": {"pullRequestId": "PR_1", "mergeMethod": "SQUASH"}}
+    assert variables == {
+        "input": {"pullRequestId": "PR_1", "mergeMethod": "SQUASH", "expectedHeadOid": "a" * 40}
+    }
 
 
 def test_apply_reviewer_request_uses_union_true() -> None:
@@ -594,10 +600,15 @@ def test_describe_pending_write_edit_includes_exact_body() -> None:
 
 def test_describe_pending_write_merge_warns_not_reversible() -> None:
     plan = PullRequestMergePlan(
-        content_id="PR_1", repository="org/repo", number=1, merge_method="MERGE"
+        content_id="PR_1",
+        repository="org/repo",
+        number=1,
+        merge_method="MERGE",
+        expected_head_oid="a" * 40,
     )
     lines = describe_pending_write(plan)
     assert "not easily reversible" in lines[0]
+    assert "a" * 40 in lines[0]
 
 
 def test_describe_pending_write_milestone_clear() -> None:

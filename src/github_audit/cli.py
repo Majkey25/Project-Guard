@@ -18,6 +18,7 @@ from github_audit.report import (
     apply_text,
     audit_text,
     browser_scan_text,
+    discovery_markdown,
     discovery_text,
     my_work_text,
     to_json,
@@ -94,10 +95,7 @@ def main(argv: list[str] | None = None) -> int:
                     args.json.write_text(to_json(results), encoding="utf-8")
                 if args.markdown:
                     args.markdown.write_text(
-                        "\n\n".join(
-                            f"# GitHub Audit Discovery\n\n```text\n{discovery_text(result)}\n```"
-                            for result in results
-                        ),
+                        "\n\n".join(discovery_markdown(result) for result in results),
                         encoding="utf-8",
                     )
                 print("\n\n".join(discovery_text(result) for result in results))

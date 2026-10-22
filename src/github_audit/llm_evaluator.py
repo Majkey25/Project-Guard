@@ -731,11 +731,14 @@ def prepare_pr_merge(
         return "Cannot merge: the selected item is not a pull request."
     if finding.content_id is None:
         return "Cannot queue merge: GitHub node id is missing."
+    if finding.head_oid is None:
+        return "Cannot queue merge: the reviewed head commit is missing. Run a new scan."
     plan = PullRequestMergePlan(
         content_id=finding.content_id,
         repository=finding.repository,
         number=finding.number,
         merge_method=merge_method,
+        expected_head_oid=finding.head_oid,
     )
     _replace_write(ctx.deps.pending_writes, PullRequestMergePlan, plan)
     return "\n".join(

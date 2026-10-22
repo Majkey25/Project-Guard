@@ -178,7 +178,11 @@ class ConversationStore:
         if overflow <= 0:
             return
         oldest = sorted(
-            (key for key, state in self._items.items() if not state.in_use),
+            (
+                key
+                for key, state in self._items.items()
+                if not state.in_use and not state.pending_writes
+            ),
             key=lambda key: self._items[key].touched_at,
         )
         if len(oldest) < overflow:

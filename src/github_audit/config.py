@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+import os
 import re
+import stat
+import tempfile
 from datetime import date
+from pathlib import Path
 from typing import Literal
 from urllib.parse import urlparse
 
@@ -29,6 +33,42 @@ def split_required_fields(value: str) -> list[str]:
     if value.strip().casefold() == "none":
         return []
     return split_csv(value)
+
+
+def write_env_keys(path: Path, updates: dict[str, str]) -> None:
+    """Replace local settings atomically without following links or sharing POSIX secrets."""
+    for value in updates.values():
+        if any(char in value for char in '\n\r"\\'):
+            raise ValueError("env values must not contain newlines, quotes or backslashes")
+    if path.is_symlink():
+        raise ValueError("Refusing to save settings through a symlink")
+    if path.exists():
+        metadata = path.stat()
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_size > 64 * 1024:
+            raise ValueError("Existing settings must be a regular file under 64 KiB")
+        if os.name == "posix" and metadata.st_uid != os.getuid():
+            raise ValueError("Existing settings belong to a different user")
+    lines = path.read_text(encoding="utf-8").splitlines() if path.exists() else []
+    remaining = dict(updates)
+    for index, line in enumerate(lines):
+        key = line.partition("=")[0].strip()
+        if not line.lstrip().startswith("#") and key in updates:
+            lines[index] = f'{key}="{updates[key]}"'
+            remaining.pop(key, None)
+    lines.extend(f'{key}="{value}"' for key, value in remaining.items())
+    temporary: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, prefix=".env-", delete=False
+        ) as stream:
+            temporary = Path(stream.name)
+            stream.write("\n".join(lines) + "\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def split_int_csv(value: str, label: str) -> list[int]:

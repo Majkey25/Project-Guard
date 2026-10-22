@@ -506,7 +506,13 @@ def apply_milestone_update(client: GitHubClient, plan: MilestoneUpdatePlan) -> N
 def apply_pr_merge(client: GitHubClient, plan: PullRequestMergePlan) -> None:
     client.graphql(
         MERGE_PR_MUTATION,
-        {"input": {"pullRequestId": plan.content_id, "mergeMethod": plan.merge_method}},
+        {
+            "input": {
+                "pullRequestId": plan.content_id,
+                "mergeMethod": plan.merge_method,
+                "expectedHeadOid": plan.expected_head_oid,
+            }
+        },
     )
 
 
@@ -615,6 +621,7 @@ def describe_pending_write(write: PendingWrite) -> list[str]:
     if isinstance(write, PullRequestMergePlan):
         return [
             f"dry-run: {write.repository}#{write.number} merge via {write.merge_method}"
+            f" at head {write.expected_head_oid}"
             " (not easily reversible)"
         ]
     reviewers = sorted(write.user_ids)
