@@ -5,14 +5,14 @@ import sys
 from io import TextIOWrapper
 from pathlib import Path
 
-from github_audit.applier import PartialApplyError, apply_plan, build_apply_plan
+from github_audit.applier import build_apply_plan, describe_changes
 from github_audit.browser_scan import BrowserSettings, run_browser_scan
 from github_audit.config import Settings, load_settings
 from github_audit.discovery import discover_all, discover_repositories
 from github_audit.github_client import GitHubClient, GitHubError
 from github_audit.llm_evaluator import suggest_for_finding
 from github_audit.logging import configure_logging
-from github_audit.models import AuditFinding, AuditResult, ProjectItem
+from github_audit.models import ApplyResult, AuditFinding, AuditResult, ProjectItem
 from github_audit.project_fields import search_items
 from github_audit.report import (
     apply_text,
@@ -45,9 +45,12 @@ def build_parser() -> argparse.ArgumentParser:
     suggest_parser = subparsers.add_parser("suggest")
     suggest_parser.add_argument("--json", action="store_true")
 
-    apply_parser = subparsers.add_parser("apply")
-    apply_parser.add_argument("--dry-run", action="store_true")
-    apply_parser.add_argument("--yes", action="store_true")
+    apply_parser = subparsers.add_parser(
+        "apply", help="Preview suggestions only; review and confirm writes in the dashboard or API"
+    )
+    apply_parser.add_argument(
+        "--dry-run", action="store_true", help="Preview only (always enabled)"
+    )
 
     browser_parser = subparsers.add_parser("browser-scan")
     browser_parser.add_argument("--project-url")
@@ -113,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
                 max_pages=settings.github_search_max_pages,
                 max_items=settings.github_search_max_items,
             )
-            # Write planning keeps its existing fresh read after discovery.
+            # Preview planning keeps its existing fresh read after discovery.
             project_items: dict[int, list[ProjectItem]] | None = (
                 None if args.command == "apply" else {}
             )
@@ -147,33 +150,19 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     add_suggestions(audit, settings)
                 except ValueError as exc:
-                    if args.yes:
-                        raise
                     suggestion_error = str(exc)
                 discovery = discoveries[0]
                 plan = build_apply_plan(audit, discovery.fields, settings)
                 if suggestion_error:
                     plan.skipped.append(f"suggestions unavailable: {suggestion_error}")
-                result = apply_plan(
-                    client,
-                    plan,
-                    discovery.project_id,
-                    discovery.fields,
-                    dry_run=bool(args.dry_run) or not bool(args.yes),
-                    allow_write=settings.auto_apply and bool(args.yes),
+                result = ApplyResult(
+                    dry_run=True,
+                    applied=[],
+                    skipped=plan.skipped + describe_changes(plan.changes),
                 )
                 print(apply_text(result))
+                print("Preview only. Review and confirm writes in the dashboard or API.")
                 return 0
-    except PartialApplyError as exc:
-        print(f"apply failed partway: {exc}", file=sys.stderr)
-        for change in exc.applied:
-            print(
-                f"  already applied: {change.repository}#{change.number} {change.field_name}",
-                file=sys.stderr,
-            )
-        for note in exc.skipped:
-            print(f"  skipped: {note}", file=sys.stderr)
-        return 2
     except (GitHubError, OSError, ValueError) as exc:
         # OSError: report file locked (Excel) or target directory missing.
         print(str(exc), file=sys.stderr)

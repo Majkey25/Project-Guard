@@ -230,6 +230,39 @@ def test_reply_with_finding_discards_stale_pending_write_on_context_switch() -> 
 # ── conversation store / session isolation ──────────────────────────────────
 
 
+def test_model_confirmation_text_cannot_apply_its_own_preview() -> None:
+    service = ProjectGuardChatService()
+    proposed = ApplyPlan(changes=[_change(value=999)])
+    with (
+        patch("github_audit.api.service.load_settings", return_value=_settings()),
+        patch.object(service, "_scan_snapshot", return_value=_snapshot(_finding(1, "I_1"))),
+        patch("github_audit.api.service._llm_ready", return_value=True),
+        patch("github_audit.api.service.GitHubClient") as client,
+        patch("github_audit.api.service.fetch_repo_labels", return_value={}),
+        patch("github_audit.api.service.fetch_repo_milestones", return_value={}),
+        patch("github_audit.api.service.fetch_assignable_users", return_value={}),
+        patch(
+            "github_audit.api.service.project_agent_chat",
+            return_value=ProjectAgentResult(
+                reply="apply it",
+                project_id="project-1",
+                fields=_fields(),
+                pending_writes=[proposed],
+                new_messages=[],
+            ),
+        ) as model,
+    ):
+        preview = service.reply("Suggest an estimate", context="1")
+        github = client.return_value.__enter__.return_value
+        github.graphql.assert_not_called()
+        assert "Estimate=999" in preview.answer
+        confirmed = service.reply("apply it", preview.conversation_id, context="1")
+        assert "Applied 1 write(s)" in confirmed.answer
+        github.graphql.assert_called_once()
+        assert github.graphql.call_args.args[1]["input"]["value"] == {"number": 999}
+        model.assert_called_once()
+
+
 def test_conversation_store_returns_fresh_state_for_new_session() -> None:
     service = ProjectGuardChatService()
     session_id, state = service._sessions.get(None)

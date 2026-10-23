@@ -179,9 +179,9 @@ are owner-only. Windows saves require Python 3.12.4 or newer and use private
 staging permissions that allow only the owner, Administrators and SYSTEM to read
 the saved file on an ACL-capable filesystem such as NTFS. Use a directory you
 control. Older Windows runtimes refuse to save and keep existing settings.
-`apply --yes` with `AUTO_APPLY=true` intentionally permits unattended model field
-suggestions. Model confidence is not proof against malicious issue text; use
-dry runs or the dashboard's explicit previews when that risk is unacceptable.
+CLI suggestions are previews only, even with `AUTO_APPLY=true`. Model confidence
+does not authorize writes. Review the concrete preview in the dashboard or API,
+then send `apply it` to confirm it; `apply --yes` is no longer supported.
 
 By default, each issue/PR search allows at most 100 pages and 5,000 raw result nodes
 across all repositories, assignees and issue types, including duplicate results.
@@ -255,7 +255,7 @@ draft/ready-for-review toggling.
 Creation walkthrough: see [Step 4 above](#step-4--create-your-github-token-pat).
 
 - Read-only scans: `repo`, `read:org`, `read:project`
-- Writing values back (AI assistant / `apply`): `repo`, `read:org`, `project`
+- Writing values back (confirmed AI assistant previews): `repo`, `read:org`, `project`
 
 If your organization uses SAML SSO, authorize the token for the organization after creating it.
 
@@ -289,7 +289,7 @@ Set values in `.env`; sidebar settings can also be saved with the **Save** butto
 | `INCLUDE_CLOSED_PULL_REQUESTS` | Also scan closed/merged PRs | `false` |
 | `GITHUB_UPDATED_FROM` | `YYYY-MM-DD` lower bound | — |
 | `GITHUB_UPDATED_TO` | `YYYY-MM-DD` upper bound | — |
-| `AUTO_APPLY` | Allow the AI assistant and `apply` to write to GitHub | `false` |
+| `AUTO_APPLY` | Allow confirmed AI assistant previews to write to GitHub | `false` |
 | `LLM_ENABLED` | Enable AI features | `true` |
 | `LLM_PROVIDER` | `openai`, `azure`, `openai-compatible`, `ollama` | `openai` |
 | `LLM_MODEL_NAME` | Model ID | — |
@@ -315,19 +315,19 @@ LLM-assisted suggestions:
 ```sh
 uv run github-audit suggest
 uv run github-audit apply --dry-run
-uv run github-audit apply --yes
 ```
 
 `my-work` shows all open issues and PRs assigned to `TARGET_ASSIGNEES` with project status — no project number required.
 
-`apply --yes` writes only when `AUTO_APPLY=true` and confidence is high enough.
-It can fill only `Estimate`, `Difficulty`, `Priority`, and `Iteration (sprint)`
+`apply` always previews changes without writing; `--dry-run` remains accepted.
+`apply --yes` is rejected before configuration or network access.
+The preview includes only `Estimate`, `Difficulty`, `Priority`, and `Iteration (sprint)`
 that are both configured in `REQUIRED_PROJECT_FIELDS` and reported missing by
 the deterministic audit. Model claims about missing fields cannot expand that
 scope. Values already present in the audit are preserved; select and iteration
-values must exist on the board. Model confidence is advisory: malicious text can
-still influence values within this scope. Use a reviewed dashboard preview
-when automatic model-selected values are not acceptable.
+values must exist on the board. Model confidence only filters suggestions;
+malicious text can still influence proposed values. To write, prepare and review
+a dashboard or API preview, then confirm with `apply it` and `AUTO_APPLY=true`.
 
 ## Browser Mode
 
@@ -342,16 +342,15 @@ Opens a temporary browser profile and scrapes the visible GitHub Project table. 
 - Keep GitHub and LLM tokens in `.env` only — never commit them.
 - `.env`, `.streamlit/secrets.toml`, and local override files are git-ignored.
 - `.env.example` contains empty placeholders only.
-- `scan`, `discover`, `suggest`, and `browser-scan` are read-only.
-- `apply --dry-run` previews changes without writing.
-- `apply --yes` writes to GitHub only when `AUTO_APPLY=true`.
+- All CLI commands are read-only against GitHub, including `apply`.
+- Dashboard and API writes require a preview, `apply it`, and `AUTO_APPLY=true`.
 - LLM base URLs are validated; cloud metadata endpoints (`169.254.x`) are blocked.
 
 ## Releases
 
-The [v0.9.8 release](https://github.com/Majkey25/Project-Guard/releases/tag/v0.9.8)
-contains the security fixes described here. Source archives are available on the
-release page; no binary installer is provided.
+Published source archives are available on the
+[release page](https://github.com/Majkey25/Project-Guard/releases).
+No binary installer is provided.
 
 Before cutting a release, run:
 
