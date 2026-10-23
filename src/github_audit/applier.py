@@ -267,7 +267,7 @@ def apply_plan(
     if dry_run or not allow_write:
         skipped = list(plan.skipped)
         if not allow_write:
-            skipped.append("writes disabled; require AUTO_APPLY=true and --yes")
+            skipped.append("writes disabled; require AUTO_APPLY=true and a confirmed preview")
         return ApplyResult(
             dry_run=True,
             applied=[],

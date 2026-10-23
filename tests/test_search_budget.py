@@ -156,7 +156,7 @@ def test_search_rejects_nonadvancing_cursor(cursor: str | None) -> None:
     assert calls == (1 if cursor is None else 2)
 
 
-def test_apply_does_not_reach_suggestions_or_writes_after_budget_failure(
+def test_apply_does_not_reach_suggestions_or_planning_after_budget_failure(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     settings = Settings.model_validate(
@@ -175,9 +175,9 @@ def test_apply_does_not_reach_suggestions_or_writes_after_budget_failure(
         patch("github_audit.cli.GitHubClient", return_value=PagingClient(lambda _: page(count=2))),
         patch("github_audit.cli.discover_repositories", return_value=["org/repo"]),
         patch("github_audit.cli.add_suggestions") as suggest,
-        patch("github_audit.cli.apply_plan") as apply,
+        patch("github_audit.cli.build_apply_plan") as plan,
     ):
-        assert main(["apply", "--yes"]) == 2
+        assert main(["apply", "--dry-run"]) == 2
     assert "GITHUB_SEARCH_MAX_ITEMS" in capsys.readouterr().err
     suggest.assert_not_called()
-    apply.assert_not_called()
+    plan.assert_not_called()
