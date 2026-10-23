@@ -157,6 +157,7 @@ def build_apply_plan(
     settings: Settings,
 ) -> ApplyPlan:
     fields_by_name = {field.name: field for field in fields}
+    required_fields = {name.casefold() for name in settings.required_project_fields}
     changes: list[ApplyChange] = []
     skipped: list[str] = []
     for finding in audit.findings:
@@ -170,54 +171,33 @@ def build_apply_plan(
         ):
             skipped.append(f"{finding.repository}#{finding.number}: suggestion confidence too low")
             continue
-        add_suggested_change(
-            changes,
-            skipped,
-            finding.repository,
-            finding.item_type,
-            finding.number,
-            finding.project_item_id,
-            fields_by_name,
-            "Estimate",
-            suggestion.estimated_points,
-            finding.current_project_fields,
-        )
-        add_suggested_change(
-            changes,
-            skipped,
-            finding.repository,
-            finding.item_type,
-            finding.number,
-            finding.project_item_id,
-            fields_by_name,
-            "Difficulty",
-            suggestion.difficulty,
-            finding.current_project_fields,
-        )
-        add_suggested_change(
-            changes,
-            skipped,
-            finding.repository,
-            finding.item_type,
-            finding.number,
-            finding.project_item_id,
-            fields_by_name,
-            "Priority",
-            suggestion.priority,
-            finding.current_project_fields,
-        )
-        add_suggested_change(
-            changes,
-            skipped,
-            finding.repository,
-            finding.item_type,
-            finding.number,
-            finding.project_item_id,
-            fields_by_name,
-            "Iteration (sprint)",
-            suggestion.suggested_iteration,
-            finding.current_project_fields,
-        )
+        missing_fields = {name.casefold() for name in finding.missing_fields} & required_fields
+        for field_name, value in (
+            ("Estimate", suggestion.estimated_points),
+            ("Difficulty", suggestion.difficulty),
+            ("Priority", suggestion.priority),
+            ("Iteration (sprint)", suggestion.suggested_iteration),
+        ):
+            if value in (None, ""):
+                continue
+            if field_name.casefold() not in missing_fields:
+                skipped.append(
+                    f"{finding.repository}#{finding.number}: {field_name}"
+                    " is outside the missing required fields"
+                )
+                continue
+            add_suggested_change(
+                changes,
+                skipped,
+                finding.repository,
+                finding.item_type,
+                finding.number,
+                finding.project_item_id,
+                fields_by_name,
+                field_name,
+                value,
+                finding.current_project_fields,
+            )
     return ApplyPlan(changes=changes, skipped=skipped)
 
 

@@ -321,6 +321,13 @@ uv run github-audit apply --yes
 `my-work` shows all open issues and PRs assigned to `TARGET_ASSIGNEES` with project status — no project number required.
 
 `apply --yes` writes only when `AUTO_APPLY=true` and confidence is high enough.
+It can fill only `Estimate`, `Difficulty`, `Priority`, and `Iteration (sprint)`
+that are both configured in `REQUIRED_PROJECT_FIELDS` and reported missing by
+the deterministic audit. Model claims about missing fields cannot expand that
+scope. Values already present in the audit are preserved; select and iteration
+values must exist on the board. Model confidence is advisory: malicious text can
+still influence values within this scope. Use a reviewed dashboard preview
+when automatic model-selected values are not acceptable.
 
 ## Browser Mode
 
