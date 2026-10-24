@@ -85,13 +85,16 @@ jobs:
               const dependencies = JSON.parse(process.env.DEPENDENCIES || 'null');
               const version = value => typeof value === 'string' &&
                 /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+              const isPatch = (previous, next) => {
+                const before = version(previous);
+                const after = version(next);
+                return before && after && before[1] === after[1] && before[2] === after[2] && BigInt(after[3]) > BigInt(before[3]);
+              };
               const patch = item => {
                 if (!item || typeof item.dependencyName !== 'string' || !item.dependencyName) return false;
-                const before = version(item.prevVersion);
-                const after = version(item.newVersion);
                 return item.updateType === 'version-update:semver-patch' && item.maintainerChanges === false &&
                   item.packageEcosystem === 'npm_and_yarn' && item.directory === '/' && item.targetBranch === 'main' &&
-                  before && after && before[1] === after[1] && before[2] === after[2] && BigInt(after[3]) > BigInt(before[3]);
+                  isPatch(item.prevVersion, item.newVersion);
               };
               if (!Array.isArray(dependencies) || !dependencies.length || dependencies.length > 50 ||
                   !dependencies.every(patch) || new Set(dependencies.map(item => item.dependencyName)).size !== dependencies.length) {
@@ -102,14 +105,23 @@ jobs:
                   files.some(file => !['package.json', 'package-lock.json'].includes(file.filename) || file.status !== 'modified' || file.previous_filename)) {
                 throw new Error('Only existing root npm manifest and lockfile changes qualify.');
               }
+              const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+              const readJson = async (path, ref) => {
+                const { data } = await github.rest.repos.getContent({ owner, repo, ref, path });
+                const limit = path === 'package.json' ? 100000 : 1000000;
+                if (data.type !== 'file' || data.encoding !== 'base64' || data.size > limit || typeof data.content !== 'string') {
+                  throw new Error(`${path} unavailable or oversized.`);
+                }
+                const decoded = Buffer.from(data.content, 'base64');
+                const value = decoded.length <= limit && JSON.parse(decoded.toString('utf8'));
+                if (!isRecord(value)) throw new Error(`${path} must contain a JSON object.`);
+                return value;
+              };
+              const beforeManifest = await readJson('package.json', pr.base.sha);
+              const afterManifest = await readJson('package.json', sha);
               if (files.some(file => file.filename === 'package.json')) {
-                const readManifest = async ref => {
-                  const { data } = await github.rest.repos.getContent({ owner, repo, ref, path: 'package.json' });
-                  if (data.type !== 'file' || data.encoding !== 'base64' || data.size > 100000) throw new Error('Manifest unavailable.');
-                  return JSON.parse(Buffer.from(data.content, 'base64').toString('utf8'));
-                };
-                const before = await readManifest(pr.base.sha);
-                const after = await readManifest(sha);
+                const before = structuredClone(beforeManifest);
+                const after = structuredClone(afterManifest);
                 for (const field of ['dependencies', 'devDependencies']) {
                   const oldDeps = before[field] ?? {};
                   const newDeps = after[field] ?? {};
@@ -129,6 +141,60 @@ jobs:
                 }
                 if (!isDeepStrictEqual(before, after)) throw new Error('Scripts or other non-dependency manifest fields changed.');
               }
+              const beforeLock = await readJson('package-lock.json', pr.base.sha);
+              const afterLock = await readJson('package-lock.json', sha);
+              const locks = [beforeLock, afterLock];
+              if (locks.some(lock => lock.lockfileVersion !== 3 || !isRecord(lock.packages) || !isRecord(lock.packages['']) ||
+                  Object.hasOwn(lock, 'dependencies')) ||
+                  !isDeepStrictEqual(Object.keys(beforeLock.packages).sort(), Object.keys(afterLock.packages).sort())) {
+                throw new Error('HOLD: unsupported lock structure or added/removed package nodes.');
+              }
+              for (const [index, manifest] of [beforeManifest, afterManifest].entries()) {
+                const root = locks[index].packages[''];
+                for (const field of ['dependencies', 'devDependencies']) {
+                  if (!isDeepStrictEqual(root[field], manifest[field])) throw new Error('Lock root dependencies differ from the manifest.');
+                }
+                for (const dep of dependencies) {
+                  if (Object.hasOwn(manifest.dependencies ?? {}, dep.dependencyName) || Object.hasOwn(manifest.devDependencies ?? {}, dep.dependencyName)) {
+                    const expected = (index ? dep.newVersion : dep.prevVersion).replace(/^v/, '');
+                    if (locks[index].packages[`node_modules/${dep.dependencyName}`]?.version !== expected) {
+                      throw new Error('Direct lock versions differ from verified metadata.');
+                    }
+                  }
+                }
+              }
+              const source = node => {
+                const url = new URL(node.resolved);
+                const suffix = `-${node.version}.tgz`;
+                if (url.origin !== 'https://registry.npmjs.org' || url.username || url.password || url.search || url.hash ||
+                    !url.pathname.endsWith(suffix) || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(node.integrity)) {
+                  throw new Error('HOLD: unclassifiable lock source or integrity.');
+                }
+                return url.href.slice(0, -suffix.length);
+              };
+              for (const path of Object.keys(beforeLock.packages)) {
+                const before = beforeLock.packages[path];
+                const after = afterLock.packages[path];
+                if (!isRecord(before) || !isRecord(after)) throw new Error('Unsupported lock package record.');
+                if (isDeepStrictEqual(before, after)) continue;
+                const oldFields = { ...before };
+                const newFields = { ...after };
+                if (path === '') {
+                  for (const field of ['dependencies', 'devDependencies']) { delete oldFields[field]; delete newFields[field]; }
+                } else {
+                  if (!path.startsWith('node_modules/') || !isPatch(before.version, after.version) ||
+                      source(before) !== source(after) || before.integrity === after.integrity) {
+                    throw new Error('HOLD: every changed lock package must be a stable patch from the same source.');
+                  }
+                  for (const field of ['version', 'resolved', 'integrity']) { delete oldFields[field]; delete newFields[field]; }
+                }
+                if (!isDeepStrictEqual(oldFields, newFields)) throw new Error('HOLD: lock package metadata changed beyond classified patch fields.');
+              }
+              const oldLockMetadata = { ...beforeLock };
+              const newLockMetadata = { ...afterLock };
+              delete oldLockMetadata.packages;
+              delete newLockMetadata.packages;
+              if (!isDeepStrictEqual(oldLockMetadata, newLockMetadata)) throw new Error('Lock root metadata changed.');
               const fresh = async () => {
                 const { data: latest } = await github.rest.pulls.get(args);
                 if (latest.state !== 'open' || latest.head.sha !== sha || latest.base.ref !== pr.base.ref ||
@@ -165,13 +231,34 @@ jobs:
                   .flatMap(rule => rule.parameters.required_status_checks ?? []);
               };
               let required = await protection();
+              const skippedSkloPublish = async check => {
+                const names = ['Publish preview', 'Publish $' + '{{ needs.verify.outputs.target }}'];
+                if (repo !== 'skloservis-brod' || !names.includes(check.name) || check.app?.id !== 15368 ||
+                    check.status !== 'completed' || check.conclusion !== 'skipped' || check.head_sha !== sha ||
+                    required.some(rule => rule.context === check.name)) return false;
+                const ids = /^https:\/\/github\.com\/Majkey25\/skloservis-brod\/actions\/runs\/([1-9]\d*)\/job\/([1-9]\d*)$/.exec(check.details_url || '');
+                if (!ids || ![check.id, Number(ids[1]), Number(ids[2]), check.check_suite?.id].every(Number.isSafeInteger)) return false;
+                const { data: job } = await github.rest.actions.getJobForWorkflowRun({ owner, repo, job_id: Number(ids[2]) });
+                if (job.id !== Number(ids[2]) || job.run_id !== Number(ids[1]) || job.name !== check.name ||
+                    job.head_sha !== sha || job.status !== 'completed' || job.conclusion !== 'skipped' ||
+                    job.check_run_url !== `https://api.github.com/repos/${owner}/${repo}/check-runs/${check.id}`) return false;
+                const { data: workflow } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: job.run_id });
+                return workflow.id === job.run_id && workflow.check_suite_id === check.check_suite.id &&
+                  workflow.name === 'Site' && workflow.path === '.github/workflows/site.yml' &&
+                  workflow.event === 'pull_request' && workflow.head_sha === sha &&
+                  workflow.repository?.full_name === `${owner}/${repo}` && workflow.head_repository?.full_name === `${owner}/${repo}`;
+              };
               const checksPass = async latest => {
                 const refs = [sha];
                 if (/^[a-f0-9]{40}$/.test(latest.merge_commit_sha || '') && latest.merge_commit_sha !== sha) refs.unshift(latest.merge_commit_sha);
                 const snapshots = [];
                 for (const ref of refs) {
-                  const runs = await github.paginate(github.rest.checks.listForRef,
+                  const observed = await github.paginate(github.rest.checks.listForRef,
                     { owner, repo, ref, filter: 'latest', per_page: 100 });
+                  const runs = [];
+                  for (const check of observed) {
+                    if (!(await skippedSkloPublish(check))) runs.push(check);
+                  }
                   const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
                     { owner, repo, ref, per_page: 100 });
                   const currentStatuses = [...new Map(statuses.toReversed().map(item => [item.context, item])).values()];

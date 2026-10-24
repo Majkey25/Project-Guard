@@ -16,6 +16,8 @@ const testMerge = 'c'.repeat(40);
 const mergedSha = 'd'.repeat(40);
 const start = '<!-- project-guard:dependency-context:start -->';
 const end = '<!-- project-guard:dependency-context:end -->';
+const lockFixtures = JSON.parse(readFileSync(join(__dirname, 'fixtures/dependency-locks.json'), 'utf8'));
+const skippedPublish = JSON.parse(readFileSync(join(__dirname, 'fixtures/sklo-skipped-publish.json'), 'utf8'));
 
 function fixture(repo = 'init') {
   const fullName = `Majkey25/${repo}`;
@@ -41,6 +43,7 @@ function fixture(repo = 'init') {
     files: ['package.json', 'package-lock.json'].map(filename => ({ filename, status: 'modified' })),
     before: { name: 'site', scripts: { build: 'astro build' }, dependencies: { astro: '^5.1.1' } },
     after: { name: 'site', scripts: { build: 'astro build' }, dependencies: { astro: '^5.1.2' } },
+    beforeLock: structuredClone(lockFixtures.before), afterLock: structuredClone(lockFixtures.patch),
     branch: { protected: true, commit: { sha: base } },
     rules: [{ type: 'required_status_checks', ruleset_id: rulesetId,
       ruleset_source_type: 'Repository', ruleset_source: fullName,
@@ -66,10 +69,13 @@ async function execute(state) {
       },
       getContent: async params => {
         record('content', params);
-        assert.equal(params.path, 'package.json');
+        assert(['package.json', 'package-lock.json'].includes(params.path));
         assert([base, head].includes(params.ref));
-        const content = Buffer.from(JSON.stringify(params.ref === base ? state.before : state.after)).toString('base64');
-        return { data: { type: 'file', encoding: 'base64', size: 200, content } };
+        const value = params.path === 'package.json'
+          ? (params.ref === base ? state.before : state.after)
+          : (params.ref === base ? state.beforeLock : state.afterLock);
+        const content = Buffer.from(JSON.stringify(value));
+        return { data: { type: 'file', encoding: 'base64', size: content.length, content: content.toString('base64') } };
       },
       listCommitStatusesForRef: async params => ({ data: clone(state.statusesByRef?.[params.ref] ?? state.statuses) }),
       listReleases: async params => {
@@ -104,7 +110,19 @@ async function execute(state) {
       state.onChecks?.(state, params);
       return { data: clone(state.runsByRef?.[params.ref] ?? state.runs) };
     } },
-    actions: { createWorkflowDispatch: async params => {
+    actions: {
+      getJobForWorkflowRun: async params => {
+        record('job', params);
+        assert.equal(params.job_id, state.publish.job.id);
+        if (state.actionsReadError) throw state.actionsReadError;
+        return { data: clone(state.publish.job) };
+      },
+      getWorkflowRun: async params => {
+        record('workflow', params);
+        assert.equal(params.run_id, state.publish.job.run_id);
+        return { data: clone(state.publish.workflow) };
+      },
+      createWorkflowDispatch: async params => {
       record('dispatch', params);
       assert(state.calls.some(call => call.op === 'merge'));
       assert.equal(state.mergeResponse.merged, true);
@@ -406,5 +424,104 @@ test('native code-scanning findings and unfinished nonrequired checks also block
       conclusion, app: { id: 123, slug: 'github-code-scanning' } });
     await execute(state); noMerge(state);
     assert.equal(state.waits, 60);
+  }
+});
+
+function skloFixture(name = skippedPublish.check.name) {
+  const state = fixture('skloservis-brod');
+  state.publish = structuredClone(skippedPublish);
+  // Keep the live API identities; bind the recorded job to the candidate SHA used by these tests.
+  for (const item of [state.publish.check, state.publish.job, state.publish.workflow]) item.head_sha = head;
+  state.publish.check.name = name;
+  state.publish.job.name = name;
+  state.runs.push(state.publish.check);
+  return state;
+}
+
+test('actual skipped Sklo publish job and rendered preview name pass only after Actions identity verification', async () => {
+  for (const name of [skippedPublish.check.name, 'Publish preview']) {
+    const state = await execute(skloFixture(name));
+    assert.equal(state.waits, 0);
+    assert(state.calls.some(call => call.op === 'job'));
+    assert(state.calls.some(call => call.op === 'workflow'));
+    assert(state.calls.some(call => call.op === 'merge'));
+    assert(state.calls.some(call => call.op === 'dispatch'));
+  }
+});
+
+test('skip exception rejects wrong names, required deployment, workflow/event/head, app and unavailable identity', async () => {
+  const changes = [
+    state => { state.publish.check.name = 'Publish production'; state.publish.job.name = 'Publish production'; },
+    state => { state.rules[0].parameters.required_status_checks.push({ context: state.publish.check.name, integration_id: 15368 }); },
+    state => { state.publish.workflow.path = '.github/workflows/other.yml'; },
+    state => { state.publish.workflow.name = 'Other'; },
+    state => { state.publish.workflow.event = 'push'; },
+    state => { state.publish.workflow.head_sha = base; },
+    state => { state.publish.job.head_sha = base; },
+    state => { state.publish.check.head_sha = base; },
+    state => { state.publish.check.app.id = 999; },
+    state => { state.publish.check.conclusion = 'neutral'; state.publish.job.conclusion = 'neutral'; },
+    state => { state.publish.job.check_run_url += '0'; },
+    state => { state.publish.workflow.check_suite_id++; },
+    state => { state.publish.workflow.head_repository.full_name = 'someone/skloservis-brod'; },
+    state => { state.publish.check.details_url = 'https://evil.test/actions/runs/39958977006/job/120434589848'; },
+    state => { state.actionsReadError = Object.assign(new Error('Forbidden'), { status: 403 }); },
+  ];
+  for (const change of changes) {
+    const state = skloFixture(); change(state); await execute(state); noMerge(state);
+  }
+  const other = fixture();
+  other.runs.push(structuredClone(skippedPublish.check));
+  await execute(other); noMerge(other);
+});
+
+test('reads v3 lock fixtures at both verified SHAs and rejects hidden transitive major upgrade', async () => {
+  const state = fixture(); state.afterLock = structuredClone(lockFixtures.major);
+  await execute(state); noMerge(state);
+  assert.deepEqual(state.calls.filter(call => call.op === 'content' && call.path === 'package-lock.json')
+    .map(call => call.ref), [base, head]);
+  assert(state.notices.some(notice => notice.includes('every changed lock package')));
+});
+
+test('direct and transitive patch locks preserve root metadata and exact dependency ranges', async () => {
+  const state = await execute(fixture());
+  assert(state.calls.some(call => call.op === 'dispatch'));
+  assert.deepEqual(state.beforeLock, lockFixtures.before);
+  assert.deepEqual(state.afterLock, lockFixtures.patch);
+  const lockOnly = fixture();
+  lockOnly.files = [{ filename: 'package-lock.json', status: 'modified' }]; lockOnly.pr.changed_files = 1;
+  lockOnly.afterLock = structuredClone(lockFixtures.major);
+  lockOnly.afterLock.packages[''].dependencies.astro = '^5.1.1';
+  lockOnly.after = structuredClone(lockOnly.before);
+  await execute(lockOnly); noMerge(lockOnly);
+});
+
+test('unknown lock formats, node additions/removals, versions, source and unrelated metadata stay manual', async () => {
+  const path = 'node_modules/transitive-helper';
+  const changes = [
+    state => { state.afterLock.lockfileVersion = 2; },
+    state => { delete state.afterLock.packages; },
+    state => { state.afterLock.packages = []; },
+    state => { delete state.afterLock.packages['']; },
+    state => { state.afterLock.packages[path] = null; },
+    state => { delete state.afterLock.packages[path]; },
+    state => { state.afterLock.packages['node_modules/new'] = structuredClone(state.afterLock.packages[path]); },
+    state => { state.afterLock.packages[path].version = '1.10.0'; },
+    state => { state.afterLock.packages[path].version = '1.8.9'; },
+    state => { state.afterLock.packages[path].version = '1.9.1-beta.1'; },
+    state => { state.afterLock.packages[path].version = head; },
+    state => { state.afterLock.packages[path].version = '1.9.0'; },
+    state => { state.afterLock.packages[path].resolved = 'https://evil.test/transitive-helper-1.9.1.tgz'; },
+    state => { state.afterLock.packages[path].resolved = 'https://registry.npmjs.org/another/-/another-1.9.1.tgz'; },
+    state => { state.afterLock.packages[path].resolved = 'git+https://github.com/other/repo.git#' + head; },
+    state => { delete state.afterLock.packages[path].integrity; },
+    state => { state.afterLock.packages[path].hasInstallScript = true; },
+    state => { state.afterLock.packages[''].dependencies.astro = '~5.1.2'; },
+    state => { state.afterLock.packages[''].version = '0.2.0'; },
+    state => { state.afterLock.version = '0.2.0'; },
+    state => { state.afterLock.packages['node_modules/astro'].version = '5.1.3'; },
+  ];
+  for (const change of changes) {
+    const state = fixture(); change(state); await execute(state); noMerge(state);
   }
 });
