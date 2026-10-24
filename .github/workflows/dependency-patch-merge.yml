@@ -1,0 +1,305 @@
+name: Dependency patch merge
+
+on:
+  workflow_call:
+    inputs:
+      auto-merge:
+        description: Merge verified patches after required CI and dispatch the existing deployment workflow
+        type: boolean
+        default: false
+
+permissions:
+  contents: write
+  pull-requests: read
+  actions: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: dependency-patch-merge-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  merge:
+    if: >-
+      inputs.auto-merge && github.event_name == 'pull_request_target' &&
+      contains(fromJSON('["Majkey25/init","Majkey25/exhalace","Majkey25/WeTheGods","Majkey25/skloservis-brod"]'), github.repository) &&
+      github.event.repository.archived == false &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - name: Verify Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Verify protected patch merge and dispatch deployment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          AUTO_MERGE: ${{ inputs.auto-merge }}
+          DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { isDeepStrictEqual } = require('node:util');
+            const sites = {
+              init: { ruleset: 25776669, checks: ['Format, typecheck, build'] },
+              exhalace: { ruleset: 25776672, checks: ['Format, typecheck, build'] },
+              WeTheGods: { ruleset: 25776675, checks: ['Format, typecheck, build'] },
+              'skloservis-brod': { ruleset: 25776676, checks: ['Locked dependency checks', 'Verify and build'] },
+            };
+            const { owner, repo } = context.repo;
+            const event = context.payload.pull_request;
+            if (process.env.AUTO_MERGE !== 'true' || context.eventName !== 'pull_request_target' ||
+                owner !== 'Majkey25' || !Object.hasOwn(sites, repo) || !event) return;
+            const args = { owner, repo, pull_number: event.number };
+            const { data: pr } = await github.rest.pulls.get(args);
+            const sha = pr.head.sha;
+            if (pr.state !== 'open' || sha !== event.head.sha) return;
+            const expectedChecks = [...sites[repo].checks, 'CodeQL', 'Dependency review'];
+            try {
+              if (pr.user.login !== 'dependabot[bot]' || pr.head.repo?.full_name !== `${owner}/${repo}` ||
+                  pr.base.repo?.full_name !== `${owner}/${repo}` || pr.base.ref !== 'main' || pr.draft || pr.auto_merge) {
+                throw new Error('Expected a same-repository, ready Dependabot PR targeting main, without native auto-merge.');
+              }
+              const original = body => {
+                const start = '<!-- project-guard:dependency-context:start -->';
+                const end = '<!-- project-guard:dependency-context:end -->';
+                body = body || '';
+                const starts = body.split(start).length - 1;
+                const ends = body.split(end).length - 1;
+                if (starts !== ends || starts > 1 || (starts && body.indexOf(start) > body.indexOf(end))) throw new Error('Malformed context markers.');
+                return (starts ? body.slice(0, body.indexOf(start)) + body.slice(body.indexOf(end) + end.length) : body).trimEnd();
+              };
+              if (original(pr.body) !== original(event.body)) throw new Error('PR description changed since the metadata event.');
+              // fetch-metadata verifies only commits[0]. Never trust a later commit or an aggregate updateType.
+              const commits = await github.paginate(github.rest.pulls.listCommits, { ...args, per_page: 100 });
+              if (pr.commits !== 1 || commits.length !== 1 || commits[0].sha !== sha ||
+                  commits[0].author?.login !== 'dependabot[bot]' || commits[0].commit.verification?.verified !== true) {
+                throw new Error('Exactly one verified Dependabot commit must equal the current head.');
+              }
+              const dependencies = JSON.parse(process.env.DEPENDENCIES || 'null');
+              const version = value => typeof value === 'string' &&
+                /^v?(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.exec(value);
+              const isPatch = (previous, next) => {
+                const before = version(previous);
+                const after = version(next);
+                return before && after && before[1] === after[1] && before[2] === after[2] && BigInt(after[3]) > BigInt(before[3]);
+              };
+              const patch = item => {
+                if (!item || typeof item.dependencyName !== 'string' || !item.dependencyName) return false;
+                return item.updateType === 'version-update:semver-patch' && item.maintainerChanges === false &&
+                  item.packageEcosystem === 'npm_and_yarn' && item.directory === '/' && item.targetBranch === 'main' &&
+                  isPatch(item.prevVersion, item.newVersion);
+              };
+              if (!Array.isArray(dependencies) || !dependencies.length || dependencies.length > 50 ||
+                  !dependencies.every(patch) || new Set(dependencies.map(item => item.dependencyName)).size !== dependencies.length) {
+                throw new Error('Every dependency needs an unambiguous stable patch and unchanged maintainer metadata.');
+              }
+              const files = await github.paginate(github.rest.pulls.listFiles, { ...args, per_page: 100 });
+              if (files.length !== pr.changed_files || !files.some(file => file.filename === 'package-lock.json') ||
+                  files.some(file => !['package.json', 'package-lock.json'].includes(file.filename) || file.status !== 'modified' || file.previous_filename)) {
+                throw new Error('Only existing root npm manifest and lockfile changes qualify.');
+              }
+              const isRecord = value => value !== null && typeof value === 'object' && !Array.isArray(value);
+              const readJson = async (path, ref) => {
+                const { data } = await github.rest.repos.getContent({ owner, repo, ref, path });
+                const limit = path === 'package.json' ? 100000 : 1000000;
+                if (data.type !== 'file' || data.encoding !== 'base64' || data.size > limit || typeof data.content !== 'string') {
+                  throw new Error(`${path} unavailable or oversized.`);
+                }
+                const decoded = Buffer.from(data.content, 'base64');
+                const value = decoded.length <= limit && JSON.parse(decoded.toString('utf8'));
+                if (!isRecord(value)) throw new Error(`${path} must contain a JSON object.`);
+                return value;
+              };
+              const beforeManifest = await readJson('package.json', pr.base.sha);
+              const afterManifest = await readJson('package.json', sha);
+              if (files.some(file => file.filename === 'package.json')) {
+                const before = structuredClone(beforeManifest);
+                const after = structuredClone(afterManifest);
+                for (const field of ['dependencies', 'devDependencies']) {
+                  const oldDeps = before[field] ?? {};
+                  const newDeps = after[field] ?? {};
+                  if (!isDeepStrictEqual(Object.keys(oldDeps).sort(), Object.keys(newDeps).sort())) throw new Error('Dependency keys changed.');
+                  for (const name of Object.keys(oldDeps)) {
+                    if (oldDeps[name] === newDeps[name]) continue;
+                    const dep = dependencies.find(item => item.dependencyName === name);
+                    const oldSpec = /^(\^|~)?(\d+\.\d+\.\d+)$/.exec(oldDeps[name]);
+                    const newSpec = /^(\^|~)?(\d+\.\d+\.\d+)$/.exec(newDeps[name]);
+                    if (!dep || !oldSpec || !newSpec || oldSpec[1] !== newSpec[1] ||
+                        oldSpec[2] !== dep.prevVersion.replace(/^v/, '') || newSpec[2] !== dep.newVersion.replace(/^v/, '')) {
+                      throw new Error('Manifest changes do not match verified dependency versions.');
+                    }
+                  }
+                  delete before[field];
+                  delete after[field];
+                }
+                if (!isDeepStrictEqual(before, after)) throw new Error('Scripts or other non-dependency manifest fields changed.');
+              }
+              const beforeLock = await readJson('package-lock.json', pr.base.sha);
+              const afterLock = await readJson('package-lock.json', sha);
+              const locks = [beforeLock, afterLock];
+              if (locks.some(lock => lock.lockfileVersion !== 3 || !isRecord(lock.packages) || !isRecord(lock.packages['']) ||
+                  Object.hasOwn(lock, 'dependencies')) ||
+                  !isDeepStrictEqual(Object.keys(beforeLock.packages).sort(), Object.keys(afterLock.packages).sort())) {
+                throw new Error('HOLD: unsupported lock structure or added/removed package nodes.');
+              }
+              for (const [index, manifest] of [beforeManifest, afterManifest].entries()) {
+                const root = locks[index].packages[''];
+                for (const field of ['dependencies', 'devDependencies']) {
+                  if (!isDeepStrictEqual(root[field], manifest[field])) throw new Error('Lock root dependencies differ from the manifest.');
+                }
+                for (const dep of dependencies) {
+                  if (Object.hasOwn(manifest.dependencies ?? {}, dep.dependencyName) || Object.hasOwn(manifest.devDependencies ?? {}, dep.dependencyName)) {
+                    const expected = (index ? dep.newVersion : dep.prevVersion).replace(/^v/, '');
+                    if (locks[index].packages[`node_modules/${dep.dependencyName}`]?.version !== expected) {
+                      throw new Error('Direct lock versions differ from verified metadata.');
+                    }
+                  }
+                }
+              }
+              const source = node => {
+                const url = new URL(node.resolved);
+                const suffix = `-${node.version}.tgz`;
+                if (url.origin !== 'https://registry.npmjs.org' || url.username || url.password || url.search || url.hash ||
+                    !url.pathname.endsWith(suffix) || !/^sha512-[A-Za-z0-9+/]{86}==$/.test(node.integrity)) {
+                  throw new Error('HOLD: unclassifiable lock source or integrity.');
+                }
+                return url.href.slice(0, -suffix.length);
+              };
+              for (const path of Object.keys(beforeLock.packages)) {
+                const before = beforeLock.packages[path];
+                const after = afterLock.packages[path];
+                if (!isRecord(before) || !isRecord(after)) throw new Error('Unsupported lock package record.');
+                if (isDeepStrictEqual(before, after)) continue;
+                const oldFields = { ...before };
+                const newFields = { ...after };
+                if (path === '') {
+                  for (const field of ['dependencies', 'devDependencies']) { delete oldFields[field]; delete newFields[field]; }
+                } else {
+                  if (!path.startsWith('node_modules/') || !isPatch(before.version, after.version) ||
+                      source(before) !== source(after) || before.integrity === after.integrity) {
+                    throw new Error('HOLD: every changed lock package must be a stable patch from the same source.');
+                  }
+                  for (const field of ['version', 'resolved', 'integrity']) { delete oldFields[field]; delete newFields[field]; }
+                }
+                if (!isDeepStrictEqual(oldFields, newFields)) throw new Error('HOLD: lock package metadata changed beyond classified patch fields.');
+              }
+              const oldLockMetadata = { ...beforeLock };
+              const newLockMetadata = { ...afterLock };
+              delete oldLockMetadata.packages;
+              delete newLockMetadata.packages;
+              if (!isDeepStrictEqual(oldLockMetadata, newLockMetadata)) throw new Error('Lock root metadata changed.');
+              const fresh = async () => {
+                const { data: latest } = await github.rest.pulls.get(args);
+                if (latest.state !== 'open' || latest.head.sha !== sha || latest.base.ref !== pr.base.ref ||
+                    latest.base.sha !== pr.base.sha || original(latest.body) !== original(pr.body) || latest.draft || latest.auto_merge) {
+                  throw new Error('Head, base, description or merge mode changed during verification.');
+                }
+                return latest;
+              };
+              const protection = async () => {
+                const { data: repository } = await github.rest.repos.get({ owner, repo });
+                const { data: branch } = await github.rest.repos.getBranch({ owner, repo, branch: 'main' });
+                const rules = await github.paginate('GET /repos/{owner}/{repo}/rules/branches/{branch}',
+                  { owner, repo, branch: 'main', per_page: 100 });
+                const strict = rules.filter(rule => rule.ruleset_id === sites[repo].ruleset &&
+                  rule.type === 'required_status_checks' && rule.parameters?.strict_required_status_checks_policy === true)
+                  .flatMap(rule => rule.parameters.required_status_checks ?? []);
+                if (repository.archived || repository.default_branch !== 'main' || repository.allow_squash_merge !== true ||
+                    branch.protected !== true || branch.commit.sha !== pr.base.sha ||
+                    !expectedChecks.every(name => strict.some(check => check.context === name && check.integration_id === 15368)) ||
+                    rules.some(rule => rule.type === 'merge_queue')) throw new Error('Current main lacks the verified strict CI ruleset.');
+                for (const id of new Set(rules.map(rule => rule.ruleset_id))) {
+                  if (!Number.isSafeInteger(id) || rules.some(rule => rule.ruleset_id === id &&
+                      (rule.ruleset_source_type !== 'Repository' || rule.ruleset_source !== `${owner}/${repo}`))) throw new Error('Unknown active ruleset source.');
+                  const { data: ruleset } = await github.request('GET /repos/{owner}/{repo}/rulesets/{ruleset_id}',
+                    { owner, repo, ruleset_id: id });
+                  // A hidden roster is not an empty roster. Prove this token cannot bypass each active ruleset.
+                  if (ruleset.enforcement !== 'active' || ruleset.current_user_can_bypass !== 'never' ||
+                      (Object.hasOwn(ruleset, 'bypass_actors') &&
+                        (!Array.isArray(ruleset.bypass_actors) || ruleset.bypass_actors.length > 0))) {
+                    throw new Error('HOLD: ruleset bypass evidence is unsafe or inaccessible.');
+                  }
+                }
+                return rules.filter(rule => rule.type === 'required_status_checks')
+                  .flatMap(rule => rule.parameters.required_status_checks ?? []);
+              };
+              let required = await protection();
+              const skippedSkloPublish = async check => {
+                const names = ['Publish preview', 'Publish $' + '{{ needs.verify.outputs.target }}'];
+                if (repo !== 'skloservis-brod' || !names.includes(check.name) || check.app?.id !== 15368 ||
+                    check.status !== 'completed' || check.conclusion !== 'skipped' || check.head_sha !== sha ||
+                    required.some(rule => rule.context === check.name)) return false;
+                const ids = /^https:\/\/github\.com\/Majkey25\/skloservis-brod\/actions\/runs\/([1-9]\d*)\/job\/([1-9]\d*)$/.exec(check.details_url || '');
+                if (!ids || ![check.id, Number(ids[1]), Number(ids[2]), check.check_suite?.id].every(Number.isSafeInteger)) return false;
+                const { data: job } = await github.rest.actions.getJobForWorkflowRun({ owner, repo, job_id: Number(ids[2]) });
+                if (job.id !== Number(ids[2]) || job.run_id !== Number(ids[1]) || job.name !== check.name ||
+                    job.head_sha !== sha || job.status !== 'completed' || job.conclusion !== 'skipped' ||
+                    job.check_run_url !== `https://api.github.com/repos/${owner}/${repo}/check-runs/${check.id}`) return false;
+                const { data: workflow } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: job.run_id });
+                return workflow.id === job.run_id && workflow.check_suite_id === check.check_suite.id &&
+                  workflow.name === 'Site' && workflow.path === '.github/workflows/site.yml' &&
+                  workflow.event === 'pull_request' && workflow.head_sha === sha &&
+                  workflow.repository?.full_name === `${owner}/${repo}` && workflow.head_repository?.full_name === `${owner}/${repo}`;
+              };
+              const checksPass = async latest => {
+                const refs = [sha];
+                if (/^[a-f0-9]{40}$/.test(latest.merge_commit_sha || '') && latest.merge_commit_sha !== sha) refs.unshift(latest.merge_commit_sha);
+                const snapshots = [];
+                for (const ref of refs) {
+                  const observed = await github.paginate(github.rest.checks.listForRef,
+                    { owner, repo, ref, filter: 'latest', per_page: 100 });
+                  const runs = [];
+                  for (const check of observed) {
+                    if (!(await skippedSkloPublish(check))) runs.push(check);
+                  }
+                  const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
+                    { owner, repo, ref, per_page: 100 });
+                  const currentStatuses = [...new Map(statuses.toReversed().map(item => [item.context, item])).values()];
+                  // Include native code-scanning results and other observed checks, not only the CodeQL analyzer job.
+                  if (runs.some(run => run.status !== 'completed' || run.conclusion !== 'success') ||
+                      currentStatuses.some(status => status.state !== 'success')) return false;
+                  snapshots.push({ runs, statuses: currentStatuses });
+                }
+                return required.length > 0 && required.every(check => {
+                  for (const snapshot of snapshots) {
+                    const runs = snapshot.runs.filter(run => run.name === check.context &&
+                      (!check.integration_id || run.app?.id === check.integration_id));
+                    const status = snapshot.statuses.find(item => item.context === check.context);
+                    if (runs.length || (status && !check.integration_id)) return true;
+                  }
+                  return false;
+                });
+              };
+              let ready = false;
+              for (let attempt = 0; attempt <= 60; attempt++) {
+                if (await checksPass(await fresh())) { ready = true; break; }
+                if (attempt < 60) await new Promise(resolve => setTimeout(resolve, 20000));
+              }
+              if (!ready) throw new Error('Required or observed checks did not all succeed within the 20-minute wait.');
+              required = await protection();
+              const latest = await fresh();
+              if (latest.mergeable !== true || latest.mergeable_state !== 'clean' || !(await checksPass(latest))) {
+                throw new Error('Current checks, reviews or mergeability still block merging.');
+              }
+              await fresh();
+              // Normal protected merge only. No admin override, review approval or asynchronous merge request.
+              const { data: merged } = await github.rest.pulls.merge({ ...args, sha, merge_method: 'squash' });
+              if (merged.merged !== true || !/^[a-f0-9]{40}$/.test(merged.sha || '')) throw new Error('GitHub did not confirm merged:true and a merge SHA.');
+              try {
+                await github.rest.actions.createWorkflowDispatch({ owner, repo, ref: 'main',
+                  workflow_id: repo === 'skloservis-brod' ? 'site.yml' : 'deploy.yml',
+                  ...(repo === 'skloservis-brod' ? { inputs: { publish: 'true' } } : {}) });
+                core.notice(`Merged ${merged.sha}; deployment dispatched on main. Deployment success is not verified here.`);
+              } catch (error) {
+                core.setFailed(`Merged ${merged.sha}, but deployment dispatch failed (${Number(error.status) || 'unknown'}). Dispatch the existing deployment workflow on main manually.`);
+              }
+            } catch (error) {
+              core.notice(`Manual merge: ${error.message}`);
+            }

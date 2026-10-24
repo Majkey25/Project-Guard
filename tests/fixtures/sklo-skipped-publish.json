@@ -1,0 +1,39 @@
+{
+  "check": {
+    "id": 120434589848,
+    "name": "Publish ${{ needs.verify.outputs.target }}",
+    "head_sha": "c3583680645352d51da2b9527251c83f43ace7bf",
+    "details_url": "https://github.com/Majkey25/skloservis-brod/actions/runs/39958977006/job/120434589848",
+    "app": {
+      "id": 15368
+    },
+    "check_suite": {
+      "id": 108305939741
+    },
+    "status": "completed",
+    "conclusion": "skipped"
+  },
+  "job": {
+    "id": 120434589848,
+    "name": "Publish ${{ needs.verify.outputs.target }}",
+    "head_sha": "c3583680645352d51da2b9527251c83f43ace7bf",
+    "run_id": 39958977006,
+    "check_run_url": "https://api.github.com/repos/Majkey25/skloservis-brod/check-runs/120434589848",
+    "status": "completed",
+    "conclusion": "skipped"
+  },
+  "workflow": {
+    "id": 39958977006,
+    "name": "Site",
+    "path": ".github/workflows/site.yml",
+    "event": "pull_request",
+    "head_sha": "c3583680645352d51da2b9527251c83f43ace7bf",
+    "check_suite_id": 108305939741,
+    "repository": {
+      "full_name": "Majkey25/skloservis-brod"
+    },
+    "head_repository": {
+      "full_name": "Majkey25/skloservis-brod"
+    }
+  }
+}

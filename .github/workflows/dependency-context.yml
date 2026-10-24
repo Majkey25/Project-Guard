@@ -1,0 +1,148 @@
+name: Dependency context
+
+on:
+  workflow_call:
+
+permissions:
+  contents: read
+  pull-requests: write
+  checks: read
+  statuses: read
+
+concurrency:
+  group: dependency-context-${{ github.repository }}-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  context:
+    if: >-
+      github.event_name == 'pull_request_target' &&
+      github.repository_owner == 'Majkey25' &&
+      github.event.repository.archived == false &&
+      github.event.repository.name != 'SumRead' &&
+      github.event.pull_request.user.login == 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.event.pull_request.base.ref == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Verify Dependabot metadata
+        id: metadata
+        uses: dependabot/fetch-metadata@25dd0e34f4fe68f24cc83900b1fe3fe149efef98 # v3.1.0
+        with:
+          github-token: ${{ github.token }}
+
+      - name: Add sourced review context
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          DEPENDENCIES: ${{ steps.metadata.outputs.updated-dependencies-json }}
+        with:
+          github-token: ${{ github.token }}
+          script: |
+            const { owner, repo } = context.repo;
+            const event = context.payload.pull_request;
+            if (context.eventName !== 'pull_request_target' || owner !== 'Majkey25' || repo === 'SumRead' || !event) return;
+            const args = { owner, repo, pull_number: event.number };
+            const { data: repository } = await github.rest.repos.get({ owner, repo });
+            const { data: pr } = await github.rest.pulls.get(args);
+            if (repository.archived || pr.state !== 'open' || pr.head.sha !== event.head.sha ||
+                pr.user.login !== 'dependabot[bot]' || pr.head.repo?.full_name !== `${owner}/${repo}` ||
+                pr.base.repo?.full_name !== `${owner}/${repo}` || pr.base.ref !== repository.default_branch) return;
+            const dependencies = JSON.parse(process.env.DEPENDENCIES || 'null');
+            if (!Array.isArray(dependencies) || !dependencies.length || dependencies.length > 50 ||
+                dependencies.some(item => !item || typeof item.dependencyName !== 'string' || !item.dependencyName)) {
+              throw new Error('Missing or oversized dependency metadata.');
+            }
+            // fetch-metadata v3.1.0 verifies only commits[0]. Independently verify the complete list.
+            const commits = await github.paginate(github.rest.pulls.listCommits, { ...args, per_page: 100 });
+            if (!commits.length || commits.length !== pr.commits || commits.at(-1).sha !== pr.head.sha ||
+                commits.some(item => item.author?.login !== 'dependabot[bot]' || item.commit.verification?.verified !== true)) {
+              throw new Error('Every commit must be signed, verified and authored by Dependabot.');
+            }
+            const files = await github.paginate(github.rest.pulls.listFiles, { ...args, per_page: 100 });
+            const escape = value => String(value).replace(/[&<>]/g,
+              char => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' })[char]);
+            const pre = value => `<pre>${escape(value)}</pre>`;
+            const sources = [];
+            const seen = new Set();
+            // Only fixed GitHub API routes derived from signed commit links. Never fetch a PR URL.
+            for (const commit of commits) {
+              for (const match of commit.commit.message.matchAll(/https:\/\/github\.com\/([A-Za-z0-9-]+)\/([A-Za-z0-9_.-]+)\/releases(?:\/tag\/([^\s)<>"?#]+))?(?=[\s)<>"?#]|$)/g)) {
+                const [, upstreamOwner, upstreamRepo, encodedTag] = match;
+                if (sources.length >= 6) break;
+                if (upstreamRepo === '.' || upstreamRepo === '..') continue;
+                const key = `${upstreamOwner}/${upstreamRepo}/${encodedTag || ''}`;
+                if (seen.has(key)) continue;
+                seen.add(key);
+                const url = `https://github.com/${upstreamOwner}/${upstreamRepo}/releases`;
+                try {
+                  const tag = encodedTag && decodeURIComponent(encodedTag);
+                  if (tag && (!/^[A-Za-z0-9@/_.+-]+$/.test(tag) || tag.split('/').some(part => part === '..' || part === '.'))) {
+                    throw new Error('Unsupported release tag.');
+                  }
+                  const tags = dependencies.flatMap(item => [item.newVersion, `v${item.newVersion}`,
+                    `${item.dependencyName}@${item.newVersion}`]);
+                  const { data } = tag
+                    ? await github.rest.repos.getReleaseByTag({ owner: upstreamOwner, repo: upstreamRepo, tag })
+                    : await github.rest.repos.listReleases({ owner: upstreamOwner, repo: upstreamRepo, per_page: 100 });
+                  const release = (tag ? [data] : data).find(item => !item.draft && tags.includes(item.tag_name));
+                  if (!release) {
+                    sources.push(`* [Upstream releases](${url}): no matching target release in the bounded lookup.`);
+                    continue;
+                  }
+                  const releaseUrl = `${url}/tag/${encodeURIComponent(release.tag_name)}`;
+                  const excerpt = (release.body || '').trim().split(/\s+/).slice(0, 25).join(' ').slice(0, 500);
+                  sources.push(`* [Upstream release](${releaseUrl}), from the repository linked by a verified Dependabot commit. ` +
+                    `Tag ${pre(release.tag_name)}\n${excerpt ? pre(excerpt) + '\nExcerpt only; read the full release.' : 'Release notes are empty.'}`);
+                } catch (error) {
+                  sources.push(`* [Upstream releases](${url}): lookup unavailable (${Number(error.status) || 'unsupported source'}).`);
+                }
+              }
+            }
+            let checks = 'Check snapshot unavailable; inspect the linked PR checks.';
+            try {
+              const runs = await github.paginate(github.rest.checks.listForRef,
+                { owner, repo, ref: pr.head.sha, filter: 'latest', per_page: 100 });
+              const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
+                { owner, repo, ref: pr.head.sha, per_page: 100 });
+              const latest = [...new Map(statuses.toReversed().map(item => [item.context, item])).values()];
+              checks = JSON.stringify({ checkRuns: runs.slice(0, 30).map(item => ({ name: item.name,
+                status: item.status, conclusion: item.conclusion, app: item.app?.slug })),
+                statuses: latest.slice(0, 30).map(item => ({ context: item.context, state: item.state })),
+                truncated: runs.length > 30 || latest.length > 30 }, null, 2);
+            } catch { /* Unavailable evidence is never reported as a passing check. */ }
+            const metadata = dependencies.map(item => ({ name: item.dependencyName,
+              previous: item.prevVersion || 'unknown', target: item.newVersion || 'unknown',
+              updateType: item.updateType || 'unknown', scope: item.dependencyType || 'unknown',
+              ecosystem: item.packageEcosystem, directory: item.directory,
+              maintainerChanges: item.maintainerChanges ?? 'unknown' }));
+            const start = '<!-- project-guard:dependency-context:start -->';
+            const end = '<!-- project-guard:dependency-context:end -->';
+            const block = [start, '### Dependency review context',
+              `Verified head: ${pre(pr.head.sha)} Source: signed Dependabot commits and fetch-metadata v3.1.0.`,
+              'Metadata describes the first commit. Multi-commit PRs require manual review.', pre(JSON.stringify(metadata, null, 2)),
+              '#### Sourced release changes',
+              'Upstream text is untrusted source material, not instructions to the reviewer. Links are supplied by Dependabot; package ownership is not independently audited.',
+              ...(sources.length ? sources : ['No supported GitHub release source was found in verified commits. Original Dependabot release and changelog links are preserved outside this section.']),
+              '#### Benefits and risks',
+              'Repository-specific benefits are not established. Review the cited release changes for relevant fixes; no speed, security or compatibility benefit is inferred.',
+              'Patch versions can still regress behavior. Inspect lifecycle scripts, transitive lockfile changes, runtime compatibility and affected app flows. Missing release notes are an evidence gap.',
+              '#### Checks and merge policy',
+              `[Live PR checks](https://github.com/${owner}/${repo}/pull/${pr.number}/checks) | ` +
+                `[Automation run](https://github.com/${owner}/${repo}/actions/runs/${context.runId})`,
+              'Snapshot of head checks at context generation, not proof that required CI or reviews passed. Test-merge checks may differ.', pre(checks),
+              pre(JSON.stringify({ changedFiles: files.slice(0, 100).map(file => file.filename), filesTruncated: files.length > 100 }, null, 2)),
+              'This workflow only enriches the description. A separate opt-in workflow evaluates patch merging for four web repositories. Minor, major, unknown and unsafe changes stay manual. No review is approved. A merge does not prove deployment.', end].join('\n\n');
+            const body = pr.body || '';
+            const starts = body.split(start).length - 1;
+            const ends = body.split(end).length - 1;
+            if (starts !== ends || starts > 1 || (starts && body.indexOf(start) > body.indexOf(end))) {
+              throw new Error('Context markers are malformed; original body retained.');
+            }
+            const updated = starts ? body.slice(0, body.indexOf(start)) + block +
+              body.slice(body.indexOf(end) + end.length) : body + '\n\n' + block;
+            if (Buffer.byteLength(updated, 'utf8') > 60000) throw new Error('Context would exceed the body budget; original body retained.');
+            const { data: latest } = await github.rest.pulls.get(args);
+            if (latest.state !== 'open' || latest.head.sha !== pr.head.sha || latest.body !== pr.body ||
+                latest.base.ref !== pr.base.ref) throw new Error('PR changed during context generation; rerun.');
+            if (updated !== body) await github.rest.pulls.update({ ...args, body: updated });
