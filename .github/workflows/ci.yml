@@ -31,6 +31,9 @@ jobs:
       - name: Test
         run: uv run pytest
 
+      - name: Test dependency automation
+        run: node --test tests/dependency-context.test.cjs
+
   windows-settings:
     runs-on: windows-latest
     steps:
