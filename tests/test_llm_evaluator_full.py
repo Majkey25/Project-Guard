@@ -154,3 +154,14 @@ def test_suggest_passes_finding_details_to_agent() -> None:
     assert "Fix the thing" in prompt
     assert "Estimate" in prompt
     assert "Priority" in prompt
+
+
+def test_agent_cache_drops_agents_built_with_old_settings() -> None:
+    suggestion = LLMSuggestion(confidence=0.7, rationale="ok", should_auto_apply=False)
+    rotated = _settings().model_copy(update={"llm_api_key": "rotated-key"})
+    with patch("pydantic_ai.Agent", return_value=_mock_agent_returning(suggestion)) as agent:
+        for settings in (_settings(), _settings(), rotated, _settings()):
+            suggest_for_finding(_finding(), settings)
+
+    # Same settings reuse the agent; a key change must not keep the old-key agent alive.
+    assert agent.call_count == 3
