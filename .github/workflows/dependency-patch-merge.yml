@@ -231,6 +231,9 @@ jobs:
                   .flatMap(rule => rule.parameters.required_status_checks ?? []);
               };
               let required = await protection();
+              const { data: workflow } = await github.rest.actions.getWorkflowRun({ owner, repo, run_id: context.runId });
+              const ownSuite = workflow.check_suite_id;
+              if (!Number.isSafeInteger(ownSuite) || ownSuite <= 0) throw new Error('Current workflow check suite is unavailable.');
               const skippedSkloPublish = async check => {
                 const names = ['Publish preview', 'Publish $' + '{{ needs.verify.outputs.target }}'];
                 if (repo !== 'skloservis-brod' || !names.includes(check.name) || check.app?.id !== 15368 ||
@@ -257,6 +260,7 @@ jobs:
                     { owner, repo, ref, filter: 'latest', per_page: 100 });
                   const runs = [];
                   for (const check of observed) {
+                    if (check.check_suite?.id === ownSuite) continue;
                     if (!(await skippedSkloPublish(check))) runs.push(check);
                   }
                   const statuses = await github.paginate(github.rest.repos.listCommitStatusesForRef,
@@ -285,7 +289,8 @@ jobs:
               if (!ready) throw new Error('Required or observed checks did not all succeed within the 20-minute wait.');
               required = await protection();
               const latest = await fresh();
-              if (latest.mergeable !== true || latest.mergeable_state !== 'clean' || !(await checksPass(latest))) {
+              // The running merge job can make the state unstable; every other check must still pass.
+              if (latest.mergeable !== true || !['clean', 'unstable'].includes(latest.mergeable_state) || !(await checksPass(latest))) {
                 throw new Error('Current checks, reviews or mergeability still block merging.');
               }
               await fresh();

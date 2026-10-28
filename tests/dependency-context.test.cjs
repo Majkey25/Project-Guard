@@ -50,6 +50,7 @@ function fixture(repo = 'init') {
       parameters: { strict_required_status_checks_policy: true,
         required_status_checks: names.map(context => ({ context, integration_id: 15368 })) } }],
     ruleset: { enforcement: 'active', bypass_actors: [], current_user_can_bypass: 'never' },
+    workflow: { id: 123, check_suite_id: 456 },
     runs: names.map(name => ({ name, status: 'completed', conclusion: 'success', app: { id: 15368, slug: 'github-actions' } })),
     statuses: [], releases: [{ tag_name: 'astro@5.1.2', draft: false, body: 'Fixes an upstream rendering issue.' }],
     mergeResponse: { merged: true, sha: mergedSha },
@@ -119,6 +120,10 @@ async function execute(state) {
       },
       getWorkflowRun: async params => {
         record('workflow', params);
+        if (params.run_id === 123) {
+          if (state.actionsReadError) throw state.actionsReadError;
+          return { data: clone(state.workflow) };
+        }
         assert.equal(params.run_id, state.publish.job.run_id);
         return { data: clone(state.publish.workflow) };
       },
@@ -424,6 +429,41 @@ test('native code-scanning findings and unfinished nonrequired checks also block
       conclusion, app: { id: 123, slug: 'github-code-scanning' } });
     await execute(state); noMerge(state);
     assert.equal(state.waits, 60);
+  }
+});
+
+test('running automation checks do not block their own merge or satisfy required contexts', async () => {
+  for (const repo of ['init', 'exhalace', 'WeTheGods', 'skloservis-brod']) {
+    for (const mergeState of ['clean', 'unstable']) {
+      const state = fixture(repo);
+      state.pr.mergeable_state = mergeState;
+      state.runs.push({ name: 'patch-merge / merge', status: 'in_progress', conclusion: null,
+        app: { id: 15368 }, check_suite: { id: state.workflow.check_suite_id } });
+      await execute(state);
+      assert.equal(state.waits, 0);
+      assert(state.calls.some(call => call.op === 'dispatch'));
+      assert.equal(state.calls.filter(call => call.op === 'workflow').length, 1);
+    }
+  }
+  const required = fixture();
+  required.runs[0].check_suite = { id: required.workflow.check_suite_id };
+  await execute(required); noMerge(required);
+  const unrelated = fixture();
+  unrelated.runs.push({ name: 'patch-merge / merge', status: 'in_progress', conclusion: null,
+    app: { id: 15368 }, check_suite: { id: unrelated.workflow.check_suite_id + 1 } });
+  await execute(unrelated); noMerge(unrelated);
+});
+
+test('missing workflow identity and blocked merge states still fail closed', async () => {
+  for (const suite of [undefined, null, 0, -1, '456']) {
+    const state = fixture(); state.workflow.check_suite_id = suite;
+    await execute(state); noMerge(state);
+  }
+  const unreadable = fixture(); unreadable.actionsReadError = new Error('Forbidden');
+  await execute(unreadable); noMerge(unreadable);
+  for (const mergeState of ['blocked', 'behind', 'dirty', 'draft', 'unknown']) {
+    const state = fixture(); state.pr.mergeable_state = mergeState;
+    await execute(state); noMerge(state);
   }
 });
 
