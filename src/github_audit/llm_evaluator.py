@@ -73,7 +73,8 @@ def _cache_key(settings: Settings, discriminator: str) -> tuple[object, ...]:
 
 def _cached_agent[T](key: tuple[object, ...], build: Callable[[], T]) -> T:
     cache = cast("dict[tuple[object, ...], object] | None", getattr(_agent_cache, "values", None))
-    if cache is None:
+    # Changed settings drop agents built with old credentials, so the cache stays bounded.
+    if cache is None or any(cached[:-1] != key[:-1] for cached in cache):
         cache = {}
         _agent_cache.values = cache
     if key not in cache:
