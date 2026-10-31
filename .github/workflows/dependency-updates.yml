@@ -14,5 +14,5 @@ permissions:
 jobs:
   context:
     if: github.event.pull_request.user.login == 'dependabot[bot]'
-    uses: Majkey25/Project-Guard/.github/workflows/dependency-context.yml@c18ff6c13bea2735646088c03358302a4f0c571b
+    uses: Majkey25/Project-Guard/.github/workflows/dependency-context.yml@9a09c0a0d9a6977215f452fc7f73c53660ed9c0d
     # Root owns branch rules and deployment configuration. Do not pass secrets.
