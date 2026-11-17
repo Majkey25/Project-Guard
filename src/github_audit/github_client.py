@@ -6,7 +6,7 @@ from typing import cast
 
 import httpx
 
-type JsonValue = None | bool | int | float | str | list[JsonValue] | dict[str, JsonValue]
+type JsonValue = bool | int | float | str | list[JsonValue] | dict[str, JsonValue] | None
 type JsonObject = dict[str, JsonValue]
 
 GITHUB_GRAPHQL_URL = "https://api.github.com/graphql"
